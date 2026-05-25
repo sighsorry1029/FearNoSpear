@@ -18,7 +18,7 @@ namespace FearNoSpear
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.1";
+        public const string ModVersion = "1.0.2";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;

@@ -52,10 +52,12 @@ internal static class DeathPinCleaner
         RemoveNearestDeathPin(pendingDeath.Position);
     }
 
-    internal static void RegisterTombstone(TombStone tombstone, long ownerId)
+    internal static void RegisterTombstone(TombStone tombstone)
     {
         if (!IsEnabled()) return;
         if (tombstone == null) return;
+
+        long ownerId = tombstone.GetOwner();
         if (ownerId == 0L || ownerId != GetLocalPlayerId()) return;
 
         int instanceId = tombstone.GetInstanceID();
@@ -189,9 +191,9 @@ internal static class PlayerOnDeathDeathPinPatch
 [HarmonyPatch(typeof(TombStone), "Setup", new[] { typeof(string), typeof(long) })]
 internal static class TombStoneSetupDeathPinPatch
 {
-    private static void Postfix(TombStone __instance, long ownerId)
+    private static void Postfix(TombStone __instance)
     {
-        DeathPinCleaner.RegisterTombstone(__instance, ownerId);
+        DeathPinCleaner.RegisterTombstone(__instance);
     }
 }
 
