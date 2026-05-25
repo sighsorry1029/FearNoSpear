@@ -1,6 +1,8 @@
 bin/
 obj/
 /packages/
+Thunderstore/*_v*.zip
+Nexus/*.zip
 riderModule.iml
 /_ReSharper.Caches/
 .idea/

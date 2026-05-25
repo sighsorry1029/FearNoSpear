@@ -1,6 +1,11 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ServerSyncModTemplate", "ServerSyncModTemplate.csproj", "{4358610B-F3F4-4843-B7AF-98B7BC60DCDE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FearNoSpear", "FearNoSpear.csproj", "{4358610B-F3F4-4843-B7AF-98B7BC60DCDE}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{C6B86958-7F3A-4B4B-832D-D4493FEF5BA1}"
+	ProjectSection(SolutionItems) = preProject
+		README.md = README.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

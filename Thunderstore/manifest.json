@@ -1,9 +1,9 @@
 {
-  "name": "ServerSyncModTemplate",
-  "version_number": "1.0.0",
-  "website_url": "https://discord.gg/pdHgy6Bsng",
-  "description": "Your mod description goes here. Do not forget to replace the icon.png file with your own. Must be 256x256. Your Readme.md file will be copied from the one in your project folder.",
+  "name": "FearNoSpear",
+  "version_number": "1.0.1",
+  "website_url": "https://discord.gg/jkcJCq2sK5",
+  "description": "Protects thrown spears from disappearing on long throws and adds a `!myspear` chat command to pin tracked spears on the map. Also removes deathpins when tombstones are recovered.",
   "dependencies": [
-    "denikson-BepInExPack_Valheim-5.4.2202"
+    "denikson-BepInExPack_Valheim-5.4.2333"
   ]
 }
