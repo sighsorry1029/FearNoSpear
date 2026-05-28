@@ -12,7 +12,7 @@ FearNoSpear prevents thrown spears from disappearing on long throws, zone unload
 - Uses Valheim's own `Projectile.SpawnOnHit` path first, then verifies that a matching spear drop exists.
 - Falls back to `ItemDrop.DropItem` only when the native path cannot produce a matching drop.
 - Uses owner-only rescue, a ZDO claim flag, and a 4 meter duplicate check to reduce multiplayer duplicate-spawn risk.
-- Adds a configurable chat command, default `!myspear`, that pins up to 5 known tracked spear locations.
+- Adds a configurable chat command, default `!myspear`, that pins up to 5 thrown spear locations.
 - Optionally removes vanilla death pins when the local player's tombstone is recovered, and removes death pins from deaths that create no tombstone.
 
 ## Chat Locator
@@ -25,11 +25,11 @@ Type the configured command in normal in-game chat:
 
 The command is consumed locally, so it is not sent as public chat. It creates saved minimap pins for known tracked spear locations and opens the map. A single result is named `Spear!`; multiple results are named `Spear 1`, `Spear 2`, and so on.
 
-Tracked spear positions are updated while the spear is flying and when a matching tracked spear drop is observed. The locator keeps a session-only registry and uses it to answer later chat requests.
+Thrown spears are tagged with a small `FearNoSpear.ThrowerPlayerID` ZDO value. When the command is used, the server searches spear drop ZDOs for that thrower metadata and returns matching positions, including unloaded areas that still have saved ZDOs.
 
-The locator is not a generic spear scanner. It only tracks spears observed by this mod. Loaded `ItemDrop` scanning only refreshes spears that already have a tracked locator record.
+Loaded `ItemDrop` scanning is also used to refresh the exact current position when the spear is nearby. Spears without thrower metadata are ignored by the locator so old projectile positions do not create stale pins.
 
-When a tracked spear is picked up, locator pins created by the current session are removed and the matching local/server session records are cleared.
+When a tracked spear is picked up, locator pins created by the current session are removed by matching the exact spear drop record.
 
 ## Death Pin Cleanup
 
@@ -92,3 +92,6 @@ These are intentionally not exposed as config options:
 - ZDO rescue claim flag: enabled.
 - Nearby duplicate cleanup radius: `4` meters.
 - Verbose debug logging: disabled.
+
+## Github
+https://github.com/sighsorry1029/FearNoSpear

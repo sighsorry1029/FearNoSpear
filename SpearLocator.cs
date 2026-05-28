@@ -6,58 +6,17 @@ namespace FearNoSpear;
 internal static class SpearLocator
 {
     internal const string LoadedDropSource = "loaded ItemDrop";
+    internal const string WorldZdoDropSource = "world ZDO spear drop";
 
     private const int MaxRecords = 12;
-    internal const float LoadedDropMergeRadius = 64f;
     private const float ServerRequestTimeoutSeconds = 2f;
-    private static readonly SpearRecordStore Records = new(MaxRecords, LoadedDropMergeRadius);
+    private static readonly SpearRecordStore Records = new(MaxRecords);
     private static float _serverRequestFallbackAt = float.NegativeInfinity;
 
     internal static void Clear()
     {
         Records.Clear();
         SpearPinManager.Clear();
-    }
-
-    internal static void RecordProjectilePosition(Projectile projectile, Vector3 position, string source)
-    {
-        if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
-        if (!SpearProjectileDetector.IsTrackedSpearProjectile(projectile)) return;
-
-        ItemDrop.ItemData? spawnItem = ReflectionCache.Get<ItemDrop.ItemData?>(ReflectionCache.F_spawnItem, projectile, null);
-        if (spawnItem == null) return;
-
-        string itemKey = SpearItemIdentity.BuildLocatorKey(spawnItem);
-        string recordKey = BuildProjectileRecordKey(projectile, itemKey);
-        Player localPlayer = Player.m_localPlayer;
-        if (localPlayer == null)
-        {
-            if (SpearOwnership.TryResolveProjectileOwnerPlayerId(projectile, out long serverPlayerId))
-            {
-                SpearNetwork.RecordServerKnownSpear(serverPlayerId, recordKey, itemKey, position, source, fromTrackedProjectile: true);
-            }
-
-            return;
-        }
-
-        if (!SpearOwnership.IsLocalPlayerProjectile(projectile, spawnItem, localPlayer)) return;
-
-        Record(recordKey, itemKey, position, source, fromTrackedProjectile: true, immediateServerReport: false);
-    }
-
-    internal static void RecordKnownSpearDrop(ItemDrop.ItemData? item, Vector3 position, string source)
-    {
-        if (item == null) return;
-        if (!SpearProjectileDetector.IsSpearItem(item)) return;
-
-        string itemKey = SpearItemIdentity.BuildLocatorKey(item);
-        Player localPlayer = Player.m_localPlayer;
-        if (localPlayer == null) return;
-
-        if (!HasRecordForItem(itemKey) && !SpearItemIdentity.BelongsToPlayer(item, localPlayer)) return;
-
-        bool known = HasRecordForItem(itemKey);
-        Record(itemKey, itemKey, position, source, fromTrackedProjectile: known, mergeByKeyOnly: false, immediateServerReport: true, fromLoadedDrop: true);
     }
 
     internal static void PinKnownSpear()
@@ -84,7 +43,7 @@ internal static class SpearLocator
             return;
         }
 
-        PinLocalKnownSpears("No tracked spear location found.", "Pinned local spear location");
+        PinLocalKnownSpears("No spear drop location found.", "Pinned local spear location");
     }
 
     internal static void PinServerSpears(List<SpearLocationRecord> records)
@@ -99,27 +58,26 @@ internal static class SpearLocator
         }
 
         MergeServerRecords(records);
-        PinLocalKnownSpears("No tracked spear location found on server or client.", "Pinned spear location");
+        PinLocalKnownSpears("No spear drop location found on server or client.", "Pinned spear location");
     }
 
-    internal static void MarkSpearPickedUp(string itemKey, Vector3 pickupPosition)
+    internal static void MarkSpearPickedUp(string recordKey, string itemKey, Vector3 pickupPosition)
     {
-        if (string.IsNullOrEmpty(itemKey)) return;
+        if (string.IsNullOrEmpty(recordKey)) return;
 
-        int removedPins = SpearPinManager.RemoveForPickedSpear(itemKey, pickupPosition);
-        int removedRecords = RemoveRecordsForPickedSpear(itemKey);
-        SpearNetwork.ReportSpearPickup(itemKey, pickupPosition);
+        int removedPins = SpearPinManager.RemoveForPickedSpear(recordKey, pickupPosition);
+        int removedRecords = RemoveRecordsForPickedSpear(recordKey);
 
         if (FearNoSpearConfig.Verbose)
         {
-            FearNoSpearPlugin.Log.LogInfo($"Cleared picked spear locator state: itemKey={itemKey}; removedPins={removedPins}; removedRecords={removedRecords}; pos={pickupPosition}");
+            FearNoSpearPlugin.Log.LogInfo($"Cleared picked spear locator state: recordKey={recordKey}; itemKey={itemKey}; removedPins={removedPins}; removedRecords={removedRecords}; pos={pickupPosition}");
         }
     }
 
     internal static void PinLocalAfterEmptyServer()
     {
         ClearPendingServerRequest();
-        PinLocalKnownSpears("No tracked spear location found on server or client.", "Server had no spear record; pinned local last-known location");
+        PinLocalKnownSpears("No spear drop location found on server or client.", "Server had no spear record; pinned local loaded spear location");
     }
 
     internal static void UpdatePendingServerRequest()
@@ -127,7 +85,7 @@ internal static class SpearLocator
         if (_serverRequestFallbackAt <= 0f || Time.time < _serverRequestFallbackAt) return;
 
         ClearPendingServerRequest();
-        PinLocalKnownSpears("No response from server and no local tracked spear location found.", "Server did not respond; pinned local last-known location");
+        PinLocalKnownSpears("No response from server and no local spear drop location found.", "Server did not respond; pinned local loaded spear location");
     }
 
     private static void ClearPendingServerRequest()
@@ -159,36 +117,34 @@ internal static class SpearLocator
 
     private static void RefreshLoadedSpearDrops()
     {
+        Player localPlayer = Player.m_localPlayer;
+        if (localPlayer == null) return;
+
+        long localPlayerId = localPlayer.GetPlayerID();
+        if (localPlayerId == 0L) return;
+
         foreach (ItemDrop drop in Object.FindObjectsByType<ItemDrop>(FindObjectsSortMode.None))
         {
             if (drop == null || drop.m_itemData == null) continue;
             if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) continue;
 
             string key = SpearItemIdentity.BuildLocatorKey(drop.m_itemData);
-            string recordKey = BuildDropRecordKey(drop, key);
-            bool known = HasRecordForItem(key);
-            if (!known) continue;
+            string recordKey = SpearItemIdentity.BuildDropRecordKey(drop, key);
+            long throwerPlayerId = SpearThrowerMetadata.ReadFromDrop(drop);
+            if (throwerPlayerId == 0L || throwerPlayerId != localPlayerId) continue;
 
-            Record(recordKey, key, drop.transform.position, LoadedDropSource, fromTrackedProjectile: known, mergeByKeyOnly: false, immediateServerReport: true, fromLoadedDrop: true);
+            Record(recordKey, key, drop.transform.position, LoadedDropSource);
         }
     }
 
-    private static SpearLocationRecord Record(string recordKey, string itemKey, Vector3 position, string source, bool fromTrackedProjectile, bool mergeByKeyOnly = true, bool immediateServerReport = false, bool fromLoadedDrop = false, bool reportToServer = true, float lastUpdated = -1f)
+    private static SpearLocationRecord Record(string recordKey, string itemKey, Vector3 position, string source, float lastUpdated = -1f)
     {
-        SpearLocationRecord record = Records.Record(
+        return Records.Record(
             recordKey,
             itemKey,
             position,
             source,
-            fromTrackedProjectile,
-            fromLoadedDrop,
-            mergeByItemNearPosition: !mergeByKeyOnly,
             lastUpdated);
-        if (reportToServer)
-        {
-            SpearNetwork.ReportSpearLocation(recordKey, itemKey, position, source, record.FromTrackedProjectile, immediateServerReport);
-        }
-        return record;
     }
 
     private static void MergeServerRecords(List<SpearLocationRecord> records)
@@ -198,62 +154,18 @@ internal static class SpearLocator
             if (string.IsNullOrEmpty(record.Key)) continue;
 
             string itemKey = string.IsNullOrEmpty(record.ItemKey) ? record.Key : record.ItemKey;
-            bool dropSource = IsDropSource(record.Source);
             Record(
                 record.Key,
                 itemKey,
                 record.Position,
                 record.Source,
-                fromTrackedProjectile: true,
-                mergeByKeyOnly: false,
-                immediateServerReport: false,
-                fromLoadedDrop: dropSource,
-                reportToServer: false,
                 lastUpdated: record.LastUpdated);
         }
     }
 
-    private static bool HasRecordForItem(string itemKey)
+    private static int RemoveRecordsForPickedSpear(string recordKey)
     {
-        return Records.HasItem(itemKey);
-    }
-
-    private static string BuildProjectileRecordKey(Projectile projectile, string itemKey)
-    {
-        ZNetView? nview = ReflectionCache.GetNView(projectile);
-        string? zdoKey = TryGetZdoKey(nview);
-        if (!string.IsNullOrEmpty(zdoKey)) return $"{itemKey}#projectile:{zdoKey}";
-
-        return $"{itemKey}#projectile-local:{projectile.GetInstanceID()}";
-    }
-
-    private static string BuildDropRecordKey(ItemDrop drop, string itemKey)
-    {
-        ZNetView? nview = drop.GetComponent<ZNetView>();
-        string? zdoKey = TryGetZdoKey(nview);
-        if (!string.IsNullOrEmpty(zdoKey)) return $"{itemKey}#drop:{zdoKey}";
-
-        return $"{itemKey}#drop-local:{drop.GetInstanceID()}";
-    }
-
-    private static string? TryGetZdoKey(ZNetView? nview)
-    {
-        if (nview == null || !nview.IsValid()) return null;
-
-        ZDO zdo = nview.GetZDO();
-        if (zdo == null || !zdo.IsValid()) return null;
-
-        return zdo.m_uid.ToString();
-    }
-
-    private static int RemoveRecordsForPickedSpear(string itemKey)
-    {
-        return Records.RemoveByItem(itemKey).Count;
-    }
-
-    private static bool IsDropSource(string source)
-    {
-        return source == LoadedDropSource || source == "rescued spear" || source == "existing spear drop";
+        return Records.RemovePicked(recordKey);
     }
 
     private static void ShowMessage(string message)

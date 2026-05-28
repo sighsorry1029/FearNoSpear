@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace FearNoSpear;
@@ -7,64 +8,80 @@ internal static class SpearServerRegistry
 {
     private const int MaxRecordsPerPlayer = 20;
 
-    private static readonly Dictionary<long, SpearRecordStore> Records = new();
+    private static List<string>? _spearItemDropPrefabNames;
 
     internal static void Clear()
     {
-        Records.Clear();
+        _spearItemDropPrefabNames = null;
     }
 
-    internal static void Record(long playerId, string key, Vector3 position, string source, bool fromTrackedProjectile)
-    {
-        Record(playerId, key, key, position, source, fromTrackedProjectile);
-    }
-
-    internal static void Record(long playerId, string key, string itemKey, Vector3 position, string source, bool fromTrackedProjectile)
-    {
-        if (playerId == 0L || string.IsNullOrEmpty(key)) return;
-        if (string.IsNullOrEmpty(itemKey)) itemKey = key;
-
-        SpearRecordStore records = GetOrCreateStore(playerId);
-        records.Record(key, itemKey, position, source, fromTrackedProjectile, IsDropSource(source), mergeByItemNearPosition: IsDropSource(source));
-    }
-
-    internal static List<SpearLocationRecord> SelectBest(long playerId, int maxRecords)
+    internal static List<SpearLocationRecord> SelectBest(long playerId, int maxRecords, Vector3 referencePosition)
     {
         if (playerId == 0L) return new List<SpearLocationRecord>();
-        if (!Records.TryGetValue(playerId, out SpearRecordStore records)) return new List<SpearLocationRecord>();
 
         int limit = Mathf.Clamp(maxRecords, 1, MaxRecordsPerPlayer);
-        return records.SelectBest(limit);
+        return SelectWorldZdoSpearDrops(playerId, limit, referencePosition);
     }
 
-    internal static bool RemovePickedUp(long playerId, string itemKey, Vector3 pickupPosition)
+    private static List<SpearLocationRecord> SelectWorldZdoSpearDrops(long playerId, int limit, Vector3 referencePosition)
     {
-        if (playerId == 0L || string.IsNullOrEmpty(itemKey)) return false;
-        if (!Records.TryGetValue(playerId, out SpearRecordStore records)) return false;
+        if (ZNet.instance == null || !ZNet.instance.IsServer()) return new List<SpearLocationRecord>();
+        if (ZDOMan.instance == null || ZNetScene.instance == null) return new List<SpearLocationRecord>();
 
-        List<SpearLocationRecord> matches = records.RemoveByItem(itemKey);
-        if (matches.Count == 0) return false;
-
-        if (FearNoSpearConfig.Verbose)
+        List<SpearLocationRecord> records = new();
+        foreach (string prefabName in GetSpearItemDropPrefabNames())
         {
-            FearNoSpearPlugin.Log.LogDebug($"Removed picked spear from server locator registry: player={playerId}; itemKey={itemKey}; pos={pickupPosition}");
+            GameObject? prefab = ZNetScene.instance.GetPrefab(prefabName);
+            ItemDrop? prefabDrop = prefab != null ? prefab.GetComponent<ItemDrop>() : null;
+            if (prefabDrop == null || prefabDrop.m_itemData == null) continue;
+
+            List<ZDO> zdos = new();
+            int index = 0;
+            while (!ZDOMan.instance.GetAllZDOsWithPrefabIterative(prefabName, zdos, ref index))
+            {
+            }
+
+            foreach (ZDO zdo in zdos)
+            {
+                if (zdo == null || !zdo.IsValid()) continue;
+                if (SpearThrowerMetadata.ReadFromZdo(zdo) != playerId) continue;
+
+                string itemKey = SpearItemIdentity.BuildLocatorKey(prefabName, prefabDrop.m_itemData, zdo);
+                records.Add(new SpearLocationRecord
+                {
+                    Key = SpearItemIdentity.BuildWorldDropRecordKey(zdo.m_uid),
+                    ItemKey = itemKey,
+                    Position = zdo.GetPosition(),
+                    LastUpdated = Time.time,
+                    Source = SpearLocator.WorldZdoDropSource
+                });
+            }
         }
 
-        return true;
+        return records
+            .OrderBy(record => Vector3.SqrMagnitude(record.Position - referencePosition))
+            .Take(limit)
+            .ToList();
     }
 
-    private static SpearRecordStore GetOrCreateStore(long playerId)
+    private static List<string> GetSpearItemDropPrefabNames()
     {
-        if (Records.TryGetValue(playerId, out SpearRecordStore records)) return records;
+        if (_spearItemDropPrefabNames != null) return _spearItemDropPrefabNames;
 
-        records = new SpearRecordStore(MaxRecordsPerPlayer, SpearLocator.LoadedDropMergeRadius);
-        Records[playerId] = records;
-        return records;
-    }
+        _spearItemDropPrefabNames = new List<string>();
+        if (ZNetScene.instance == null) return _spearItemDropPrefabNames;
 
-    private static bool IsDropSource(string source)
-    {
-        return source == SpearLocator.LoadedDropSource || source == "rescued spear" || source == "existing spear drop";
+        foreach (string prefabName in ZNetScene.instance.GetPrefabNames())
+        {
+            GameObject? prefab = ZNetScene.instance.GetPrefab(prefabName);
+            ItemDrop? drop = prefab != null ? prefab.GetComponent<ItemDrop>() : null;
+            if (drop == null || drop.m_itemData == null) continue;
+            if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) continue;
+
+            _spearItemDropPrefabNames.Add(prefabName);
+        }
+
+        return _spearItemDropPrefabNames;
     }
 
 }

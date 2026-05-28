@@ -4,7 +4,7 @@ namespace FearNoSpear;
 
 internal static class SpearLocatorProtocol
 {
-    private const int ProtocolVersion = 2;
+    private const int ProtocolVersion = 3;
 
     internal static void WriteHeader(ZPackage package)
     {

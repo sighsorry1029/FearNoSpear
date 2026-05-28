@@ -11,42 +11,6 @@ internal static class SpearOwnership
         PeerPlayerIds.Clear();
     }
 
-    internal static bool IsLocalPlayerProjectile(Projectile projectile, ItemDrop.ItemData spawnItem, Player localPlayer)
-    {
-        Character owner = projectile.m_owner;
-        if (owner != null)
-        {
-            if (owner == localPlayer) return true;
-
-            Player? ownerPlayer = owner as Player;
-            if (ownerPlayer != null)
-            {
-                return ownerPlayer.GetPlayerID() == localPlayer.GetPlayerID();
-            }
-
-            return false;
-        }
-
-        return SpearItemIdentity.BelongsToPlayer(spawnItem, localPlayer);
-    }
-
-    internal static bool TryResolveProjectileOwnerPlayerId(Projectile projectile, out long playerId)
-    {
-        playerId = 0L;
-
-        Character owner = projectile.m_owner;
-        Player? ownerPlayer = owner as Player;
-        if (ownerPlayer == null) return false;
-
-        playerId = ownerPlayer.GetPlayerID();
-        return playerId != 0L;
-    }
-
-    internal static bool TryResolveReportedPeerPlayerId(long senderPeerId, long reportedPlayerId, out long playerId)
-    {
-        return TryResolveAuthoritativePlayerId(senderPeerId, reportedPlayerId, out playerId);
-    }
-
     internal static bool TryResolveRequestedPeerPlayerId(long senderPeerId, long requestedPlayerId, out long playerId)
     {
         return TryResolveAuthoritativePlayerId(senderPeerId, requestedPlayerId, out playerId) ||

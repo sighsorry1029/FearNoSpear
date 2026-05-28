@@ -9,6 +9,9 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
 {
     private const string ZdoRescueClaimKey = "FearNoSpear.Rescued";
     private const float NearbyDuplicateCheckRadius = 4f;
+    private const float PendingDropTagSeconds = 2f;
+
+    private static readonly List<PendingDropTag> PendingDropTags = new();
 
     private Projectile? _projectile;
     private bool _armed;
@@ -19,6 +22,7 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
     private float _lastTtl;
     private Vector3 _lastPosition;
     private Vector3 _lastVelocity;
+    private long _throwerPlayerId;
 
     internal static SpearSafetyTracker ArmOrRefresh(Projectile projectile)
     {
@@ -46,14 +50,46 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         return tracker;
     }
 
+    internal static void ClearPendingDropTags()
+    {
+        PendingDropTags.Clear();
+    }
+
+    internal static void UpdatePendingDropTags()
+    {
+        if (PendingDropTags.Count == 0) return;
+
+        for (int i = PendingDropTags.Count - 1; i >= 0; --i)
+        {
+            PendingDropTag pending = PendingDropTags[i];
+            if (Time.time > pending.ExpiresAt)
+            {
+                PendingDropTags.RemoveAt(i);
+                continue;
+            }
+
+            ItemDrop? drop = FindBestMatchingNearbyDrop(pending.SpawnItem, pending.Position);
+            if (drop == null) continue;
+
+            if (SpearThrowerMetadata.TryWriteToDrop(drop, pending.ThrowerPlayerId) && FearNoSpearConfig.Verbose)
+            {
+                FearNoSpearPlugin.Log.LogDebug($"Tagged delayed spear drop with thrower metadata after {pending.Reason}: playerId={pending.ThrowerPlayerId}; drop={drop.name}; pos={drop.transform.position}");
+            }
+
+            PendingDropTags.RemoveAt(i);
+        }
+    }
+
     internal void Arm(Projectile projectile)
     {
         _projectile = projectile;
         _armed = true;
         _normalHit = ReflectionCache.Get(ReflectionCache.F_didHit, projectile, false);
         _rescueAttempted = false;
+        _throwerPlayerId = 0L;
         RefreshState();
 
+        EnsureThrowerMetadata();
         ExtendInitialTtlIfNeeded();
 
         if (FearNoSpearConfig.Verbose)
@@ -67,6 +103,7 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         if (_projectile != null)
         {
             RefreshState();
+            TryCopyThrowerMetadataToNearbyDrop("normal hit");
         }
 
         _normalHit = true;
@@ -93,12 +130,11 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
 
         try
         {
-            if (TryUseExistingNearbyDrop(spawnItem, _lastPosition, "pre-rescue", out Vector3 existingDropPosition))
+            if (TryUseExistingNearbyDrop(spawnItem, _lastPosition, EnsureThrowerMetadata(), "pre-rescue", out _))
             {
                 rescueSatisfied = true;
                 _normalHit = true;
                 ReflectionCache.Set(ReflectionCache.F_didHit, _projectile, true);
-                SpearLocator.RecordKnownSpearDrop(spawnItem, existingDropPosition, "existing spear drop");
                 return true;
             }
 
@@ -113,8 +149,8 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
 
             _normalHit = true;
             ReflectionCache.Set(ReflectionCache.F_didHit, _projectile, true);
+            TryCopyThrowerMetadataToNearbyDrop(spawnItem, rescuedDropPosition, "rescue");
             RemoveNearbyDuplicateDrops(spawnItem, rescuedDropPosition);
-            SpearLocator.RecordKnownSpearDrop(spawnItem, rescuedDropPosition, "rescued spear");
 
             FearNoSpearPlugin.Log.LogInfo($"Rescued thrown spear before projectile loss: reason={reason}; pos={rescuedDropPosition}; ttl={_lastTtl:0.00}; {SpearProjectileDetector.DescribeProjectile(_projectile)}");
             return true;
@@ -179,7 +215,7 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
             _lastOwnerStateTime = Time.time;
         }
 
-        SpearLocator.RecordProjectilePosition(_projectile, _lastPosition, "tracked projectile");
+        EnsureThrowerMetadata();
     }
 
     private void ExtendInitialTtlIfNeeded()
@@ -228,6 +264,68 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
             FearNoSpearPlugin.Log.LogDebug($"Skipped spear rescue because ZNetView invalid and this client is not a recent last-known owner: {_projectile.name}; lastOwner={_lastKnownOwner}; age={age:0.00}s; maxAge={maxAge:0.00}s");
         }
         return allowLastKnown;
+    }
+
+    private long EnsureThrowerMetadata()
+    {
+        if (_throwerPlayerId != 0L) return _throwerPlayerId;
+        if (_projectile == null) return 0L;
+
+        _throwerPlayerId = SpearThrowerMetadata.ReadFromProjectile(_projectile);
+        if (_throwerPlayerId != 0L) return _throwerPlayerId;
+
+        if (SpearThrowerMetadata.TryWriteToProjectile(_projectile, out long resolvedPlayerId))
+        {
+            _throwerPlayerId = resolvedPlayerId;
+        }
+        else if (SpearThrowerMetadata.TryResolveThrowerPlayerId(_projectile, out resolvedPlayerId))
+        {
+            _throwerPlayerId = resolvedPlayerId;
+        }
+
+        return _throwerPlayerId;
+    }
+
+    private void TryCopyThrowerMetadataToNearbyDrop(string reason)
+    {
+        if (_projectile == null) return;
+
+        ItemDrop.ItemData? spawnItem = ReflectionCache.Get<ItemDrop.ItemData?>(ReflectionCache.F_spawnItem, _projectile, null);
+        if (spawnItem == null) return;
+
+        TryCopyThrowerMetadataToNearbyDrop(spawnItem, _lastPosition, reason);
+    }
+
+    private void TryCopyThrowerMetadataToNearbyDrop(ItemDrop.ItemData spawnItem, Vector3 position, string reason)
+    {
+        long throwerPlayerId = EnsureThrowerMetadata();
+        if (throwerPlayerId == 0L) return;
+
+        ItemDrop? drop = FindBestMatchingNearbyDrop(spawnItem, position);
+        if (drop == null)
+        {
+            QueuePendingDropTag(spawnItem, position, throwerPlayerId, reason);
+            return;
+        }
+
+        if (SpearThrowerMetadata.TryWriteToDrop(drop, throwerPlayerId) && FearNoSpearConfig.Verbose)
+        {
+            FearNoSpearPlugin.Log.LogDebug($"Tagged spear drop with thrower metadata after {reason}: playerId={throwerPlayerId}; drop={drop.name}; pos={drop.transform.position}");
+        }
+    }
+
+    private static void QueuePendingDropTag(ItemDrop.ItemData spawnItem, Vector3 position, long throwerPlayerId, string reason)
+    {
+        if (throwerPlayerId == 0L) return;
+
+        PendingDropTags.Add(new PendingDropTag
+        {
+            SpawnItem = spawnItem,
+            Position = position,
+            ThrowerPlayerId = throwerPlayerId,
+            Reason = reason,
+            ExpiresAt = Time.time + PendingDropTagSeconds
+        });
     }
 
     private bool TryClaimNetworkRescue(out NetworkRescueClaim claim)
@@ -290,7 +388,7 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         }
     }
 
-    private static bool TryUseExistingNearbyDrop(ItemDrop.ItemData spawnItem, Vector3 position, string phase, out Vector3 dropPosition)
+    private static bool TryUseExistingNearbyDrop(ItemDrop.ItemData spawnItem, Vector3 position, long throwerPlayerId, string phase, out Vector3 dropPosition)
     {
         ItemDrop? existing = FindBestMatchingNearbyDrop(spawnItem, position);
         if (existing == null)
@@ -300,6 +398,10 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         }
 
         dropPosition = existing.transform.position;
+        if (throwerPlayerId != 0L)
+        {
+            SpearThrowerMetadata.TryWriteToDrop(existing, throwerPlayerId);
+        }
 
         if (FearNoSpearConfig.Verbose)
         {
@@ -519,5 +621,14 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
             Zdo = zdo;
             Claimed = true;
         }
+    }
+
+    private sealed class PendingDropTag
+    {
+        internal ItemDrop.ItemData SpawnItem = null!;
+        internal Vector3 Position;
+        internal long ThrowerPlayerId;
+        internal string Reason = string.Empty;
+        internal float ExpiresAt;
     }
 }

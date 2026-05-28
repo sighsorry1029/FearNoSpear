@@ -124,6 +124,7 @@
         <Compile Include="SpearRecordStore.cs"/>
         <Compile Include="SpearServerRegistry.cs"/>
         <Compile Include="SpearSafetyTracker.cs"/>
+        <Compile Include="SpearThrowerMetadata.cs"/>
     </ItemGroup>
     <ItemGroup>
         <Content Include=".gitignore"/>

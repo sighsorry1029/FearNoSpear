@@ -1,6 +1,6 @@
 {
   "name": "FearNoSpear",
-  "version_number": "1.0.2",
+  "version_number": "1.0.4",
   "website_url": "https://discord.gg/jkcJCq2sK5",
   "description": "Protects thrown spears from disappearing on long throws and adds a `!myspear` chat command to pin tracked spears on the map. Also removes deathpins when tombstones are recovered.",
   "dependencies": [

@@ -18,7 +18,7 @@ namespace FearNoSpear
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.2";
+        public const string ModVersion = "1.0.4";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;
@@ -406,9 +406,11 @@ namespace FearNoSpear
             if (drop == null || drop.m_itemData == null) return;
             if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) return;
 
+            string itemKey = SpearItemIdentity.BuildLocatorKey(drop.m_itemData);
             __state = new PickedSpearState
             {
-                ItemKey = SpearItemIdentity.BuildLocatorKey(drop.m_itemData),
+                ItemKey = itemKey,
+                RecordKey = SpearItemIdentity.BuildDropRecordKey(drop, itemKey),
                 Position = go.transform.position
             };
         }
@@ -416,11 +418,12 @@ namespace FearNoSpear
         private static void Postfix(bool __result, PickedSpearState? __state)
         {
             if (!__result || __state == null) return;
-            SpearLocator.MarkSpearPickedUp(__state.ItemKey, __state.Position);
+            SpearLocator.MarkSpearPickedUp(__state.RecordKey, __state.ItemKey, __state.Position);
         }
 
         private sealed class PickedSpearState
         {
+            internal string RecordKey = string.Empty;
             internal string ItemKey = string.Empty;
             internal Vector3 Position;
         }
@@ -432,6 +435,7 @@ namespace FearNoSpear
         private static void Postfix()
         {
             SpearLocator.Clear();
+            SpearSafetyTracker.ClearPendingDropTags();
             DeathPinCleaner.Clear();
             SpearNetwork.ClearSession();
             SpearNetwork.RegisterRpcs();
@@ -444,6 +448,7 @@ namespace FearNoSpear
         private static void Postfix()
         {
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
+            SpearSafetyTracker.UpdatePendingDropTags();
             SpearLocator.UpdatePendingServerRequest();
         }
     }

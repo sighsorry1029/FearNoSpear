@@ -36,17 +36,17 @@ internal static class SpearPinManager
         return pinned;
     }
 
-    internal static int RemoveForPickedSpear(string itemKey, Vector3 pickupPosition)
+    internal static int RemoveForPickedSpear(string recordKey, Vector3 pickupPosition)
     {
         Minimap minimap = Minimap.instance;
         if (minimap == null)
         {
-            ActivePins.RemoveAll(pin => string.Equals(pin.ItemKey, itemKey, StringComparison.Ordinal));
+            ActivePins.RemoveAll(pin => MatchesPickedSpear(pin, recordKey));
             return 0;
         }
 
         List<SpearPinRecord> trackedPins = ActivePins
-            .Where(pin => string.Equals(pin.ItemKey, itemKey, StringComparison.Ordinal))
+            .Where(pin => MatchesPickedSpear(pin, recordKey))
             .OrderBy(pin => Vector3.SqrMagnitude(pin.Position - pickupPosition))
             .ToList();
         if (trackedPins.Count == 0) return 0;
@@ -61,8 +61,14 @@ internal static class SpearPinManager
             ++removed;
         }
 
-        ActivePins.RemoveAll(pin => string.Equals(pin.ItemKey, itemKey, StringComparison.Ordinal));
+        ActivePins.RemoveAll(pin => MatchesPickedSpear(pin, recordKey));
         return removed;
+    }
+
+    private static bool MatchesPickedSpear(SpearPinRecord pin, string recordKey)
+    {
+        return !string.IsNullOrEmpty(recordKey) &&
+               string.Equals(pin.Key, recordKey, StringComparison.Ordinal);
     }
 
     private static int RemoveActivePinsFromMap()
@@ -97,7 +103,6 @@ internal static class SpearPinManager
         ActivePins.Add(new SpearPinRecord
         {
             Key = record.Key,
-            ItemKey = record.ItemKey,
             Name = pinName,
             Position = record.Position
         });
@@ -146,7 +151,6 @@ internal static class SpearPinManager
     private sealed class SpearPinRecord
     {
         internal string Key = string.Empty;
-        internal string ItemKey = string.Empty;
         internal string Name = string.Empty;
         internal Vector3 Position;
     }

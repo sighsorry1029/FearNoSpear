@@ -34,10 +34,71 @@ internal static class SpearItemIdentity
         return string.Join("|", parts);
     }
 
-    internal static bool BelongsToPlayer(ItemDrop.ItemData item, Player player)
+    internal static string BuildLocatorKey(string prefabName, ItemDrop.ItemData prefabItem, ZDO zdo)
     {
-        long playerId = player.GetPlayerID();
-        return playerId != 0L && item.m_crafterID == playerId;
+        string sharedName = prefabItem.m_shared?.m_name ?? string.Empty;
+        int quality = zdo.GetInt(ZDOVars.s_quality, prefabItem.m_quality);
+        int variant = zdo.GetInt(ZDOVars.s_variant, prefabItem.m_variant);
+        int worldLevel = zdo.GetInt(ZDOVars.s_worldLevel, prefabItem.m_worldLevel);
+        long crafterId = zdo.GetLong(ZDOVars.s_crafterID, prefabItem.m_crafterID);
+        string crafterName = zdo.GetString(ZDOVars.s_crafterName, prefabItem.m_crafterName);
+
+        List<string> parts = new()
+        {
+            Escape(prefabName),
+            Escape(sharedName),
+            quality.ToString(),
+            variant.ToString(),
+            worldLevel.ToString(),
+            crafterId.ToString(),
+            Escape(crafterName)
+        };
+
+        int dataCount = zdo.GetInt(ZDOVars.s_dataCount, 0);
+        Dictionary<string, string> customData = new();
+        for (int i = 0; i < dataCount; ++i)
+        {
+            string key = zdo.GetString($"data_{i}");
+            if (string.IsNullOrEmpty(key)) continue;
+
+            customData[key] = zdo.GetString($"data__{i}");
+        }
+
+        foreach (KeyValuePair<string, string> pair in customData.OrderBy(pair => pair.Key))
+        {
+            parts.Add($"{Escape(pair.Key)}={Escape(pair.Value)}");
+        }
+
+        return string.Join("|", parts);
+    }
+
+    internal static string BuildDropRecordKey(ItemDrop drop, string itemKey)
+    {
+        ZNetView? nview = drop.GetComponent<ZNetView>();
+        string? zdoKey = TryGetZdoKey(nview);
+        if (zdoKey != null && zdoKey.Length > 0) return BuildDropRecordKey(zdoKey);
+
+        return $"{itemKey}#drop-local:{drop.GetInstanceID()}";
+    }
+
+    internal static string BuildWorldDropRecordKey(ZDOID zdoId)
+    {
+        return BuildDropRecordKey(zdoId.ToString());
+    }
+
+    internal static string? TryGetZdoKey(ZNetView? nview)
+    {
+        if (nview == null || !nview.IsValid()) return null;
+
+        ZDO zdo = nview.GetZDO();
+        if (zdo == null || !zdo.IsValid()) return null;
+
+        return zdo.m_uid.ToString();
+    }
+
+    private static string BuildDropRecordKey(string zdoKey)
+    {
+        return $"drop:{zdoKey}";
     }
 
     internal static bool IsEquivalent(ItemDrop.ItemData expected, ItemDrop.ItemData actual)
