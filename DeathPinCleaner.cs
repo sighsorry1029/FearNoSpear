@@ -38,17 +38,19 @@ internal static class DeathPinCleaner
         };
     }
 
-    internal static void CompleteLocalDeath(Player player)
+    internal static void UpdatePendingDeath()
     {
-        if (!IsEnabled()) return;
-        if (player == null || player != Player.m_localPlayer) return;
-
         PendingDeath? pendingDeath = _pendingDeath;
-        _pendingDeath = null;
-
         if (pendingDeath == null) return;
-        if (pendingDeath.TombstoneCreated) return;
+        if (!IsEnabled())
+        {
+            _pendingDeath = null;
+            return;
+        }
 
+        if (Time.time - pendingDeath.StartedAt < RecentDeathSeconds) return;
+
+        _pendingDeath = null;
         RemoveNearestDeathPin(pendingDeath.Position);
     }
 
@@ -66,10 +68,11 @@ internal static class DeathPinCleaner
         PendingDeath? pendingDeath = _pendingDeath;
         if (pendingDeath != null &&
             pendingDeath.PlayerId == ownerId &&
-            Time.time - pendingDeath.StartedAt <= RecentDeathSeconds)
+            Time.time - pendingDeath.StartedAt <= RecentDeathSeconds &&
+            Vector3.SqrMagnitude(pinPosition - pendingDeath.Position) <= DeathPinRemoveRadius * DeathPinRemoveRadius)
         {
-            pendingDeath.TombstoneCreated = true;
             pinPosition = pendingDeath.Position;
+            _pendingDeath = null;
         }
 
         TombstoneDeathPositions[instanceId] = pinPosition;
@@ -87,6 +90,7 @@ internal static class DeathPinCleaner
             ? knownPosition
             : GetTombstonePinPosition(tombstone);
 
+        TombstoneDeathPositions.Remove(instanceId);
         RemoveNearestDeathPin(pinPosition);
     }
 
@@ -170,7 +174,6 @@ internal static class DeathPinCleaner
         internal long PlayerId;
         internal Vector3 Position;
         internal float StartedAt;
-        internal bool TombstoneCreated;
     }
 }
 
@@ -182,10 +185,6 @@ internal static class PlayerOnDeathDeathPinPatch
         DeathPinCleaner.BeginLocalDeath(__instance);
     }
 
-    private static void Postfix(Player __instance)
-    {
-        DeathPinCleaner.CompleteLocalDeath(__instance);
-    }
 }
 
 [HarmonyPatch(typeof(TombStone), "Setup", new[] { typeof(string), typeof(long) })]

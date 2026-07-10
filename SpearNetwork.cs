@@ -4,24 +4,33 @@ using UnityEngine;
 
 namespace FearNoSpear;
 
+internal sealed class SpearLocationRecord
+{
+    internal string Key = string.Empty;
+    internal Vector3 Position;
+}
+
 internal static class SpearNetwork
 {
+    private const int ProtocolVersion = 5;
     private const string RequestRpcName = FearNoSpearPlugin.ModName + "_SpearLocationRequest";
     private const string ResponseRpcName = FearNoSpearPlugin.ModName + "_SpearLocationResponse";
 
+    private static ZRoutedRpc? _registeredRpc;
+
     internal static void ClearSession()
     {
-        SpearOwnership.ClearPeerMappings();
         SpearServerRegistry.Clear();
     }
 
     internal static void RegisterRpcs()
     {
         ZRoutedRpc? rpc = ZRoutedRpc.instance;
-        if (rpc == null) return;
+        if (rpc == null || ReferenceEquals(_registeredRpc, rpc)) return;
 
-        TryRegister(rpc, RequestRpcName, new Action<long, ZPackage>(RPC_RequestSpearLocation));
-        TryRegister(rpc, ResponseRpcName, new Action<long, ZPackage>(RPC_SpearLocationResponse));
+        rpc.Register(RequestRpcName, new Action<long, ZPackage>(RPC_RequestSpearLocation));
+        rpc.Register(ResponseRpcName, new Action<long, ZPackage>(RPC_SpearLocationResponse));
+        _registeredRpc = rpc;
     }
 
     internal static bool RequestServerSpearLocation(Player localPlayer)
@@ -29,28 +38,11 @@ internal static class SpearNetwork
         if (localPlayer == null) return false;
         if (!TryGetServerPeerId(out long serverPeerId)) return false;
 
-        long playerId = localPlayer.GetPlayerID();
-        if (playerId == 0L) return false;
-
         ZPackage package = new();
-        SpearLocatorProtocol.WriteHeader(package);
-        package.Write(playerId);
-        package.Write(FearNoSpearPlugin.Cfg.GetMaxPinsPerCommand());
+        WriteHeader(package);
         package.Write(localPlayer.transform.position);
         ZRoutedRpc.instance.InvokeRoutedRPC(serverPeerId, RequestRpcName, package);
         return true;
-    }
-
-    private static void TryRegister(ZRoutedRpc rpc, string name, Action<long, ZPackage> handler)
-    {
-        try
-        {
-            rpc.Register(name, handler);
-        }
-        catch (ArgumentException)
-        {
-            // The same routed RPC instance can be touched by multiple lifecycle patches.
-        }
     }
 
     private static bool TryGetServerPeerId(out long serverPeerId)
@@ -59,27 +51,22 @@ internal static class SpearNetwork
         if (ZNet.instance == null || ZRoutedRpc.instance == null) return false;
 
         serverPeerId = ZRoutedRpc.instance.GetServerPeerID();
-        if (serverPeerId == 0L && !ZNet.instance.IsServer()) return false;
-        return true;
+        return serverPeerId != 0L || ZNet.instance.IsServer();
     }
 
     private static void RPC_RequestSpearLocation(long senderPeerId, ZPackage package)
     {
         if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
 
-        long requestedPlayerId = 0L;
-        int requestedMaxPins = FearNoSpearPlugin.Cfg.GetMaxPinsPerCommand();
-        Vector3 requestPosition = Vector3.zero;
+        Vector3 requestPosition;
         try
         {
-            if (!SpearLocatorProtocol.TryReadHeader(package, RequestRpcName))
+            if (!TryReadHeader(package, RequestRpcName))
             {
                 SendSpearLocationResponse(senderPeerId, new List<SpearLocationRecord>());
                 return;
             }
 
-            requestedPlayerId = package.ReadLong();
-            requestedMaxPins = package.ReadInt();
             requestPosition = package.ReadVector3();
         }
         catch (Exception ex)
@@ -89,43 +76,50 @@ internal static class SpearNetwork
             return;
         }
 
-        if (!SpearOwnership.TryResolveRequestedPeerPlayerId(senderPeerId, requestedPlayerId, out long playerId))
+        if (!TryResolvePeerPlayerId(senderPeerId, out long playerId))
         {
-            if (FearNoSpearConfig.Verbose)
-            {
-                FearNoSpearPlugin.Log.LogDebug($"Ignoring spear location request from unmapped peer={senderPeerId}; requestedPlayerId={requestedPlayerId}");
-            }
-
             SendSpearLocationResponse(senderPeerId, new List<SpearLocationRecord>());
             return;
         }
 
-        int maxPins = Mathf.Clamp(Mathf.Min(requestedMaxPins, FearNoSpearPlugin.Cfg.GetMaxPinsPerCommand()), 1, 20);
-        List<SpearLocationRecord> records = SpearServerRegistry.SelectBest(playerId, maxPins, requestPosition);
+        List<SpearLocationRecord> records = SpearServerRegistry.SelectBest(playerId, requestPosition);
         SendSpearLocationResponse(senderPeerId, records);
     }
 
     private static void RPC_SpearLocationResponse(long senderPeerId, ZPackage package)
     {
+        if (!TryGetServerPeerId(out long serverPeerId) || senderPeerId != serverPeerId)
+        {
+            FearNoSpearPlugin.Log.LogWarning($"Ignored spear location response from non-server peer {senderPeerId}.");
+            return;
+        }
+
         try
         {
-            if (!SpearLocatorProtocol.TryReadHeader(package, ResponseRpcName))
+            if (!TryReadHeader(package, ResponseRpcName))
             {
                 SpearLocator.PinLocalAfterEmptyServer();
                 return;
             }
 
             int count = package.ReadInt();
-            if (count <= 0)
+            if (count < 0 || count > FearNoSpearConfig.MaxPinsPerCommand)
+            {
+                FearNoSpearPlugin.Log.LogWarning($"Ignored spear location response with invalid record count {count}.");
+                SpearLocator.PinLocalAfterEmptyServer();
+                return;
+            }
+
+            if (count == 0)
             {
                 SpearLocator.PinLocalAfterEmptyServer();
                 return;
             }
 
-            List<SpearLocationRecord> records = new();
+            List<SpearLocationRecord> records = new(count);
             for (int i = 0; i < count; ++i)
             {
-                records.Add(SpearLocatorProtocol.ReadRecord(package));
+                records.Add(ReadRecord(package));
             }
 
             SpearLocator.PinServerSpears(records);
@@ -140,16 +134,91 @@ internal static class SpearNetwork
     {
         if (ZRoutedRpc.instance == null) return;
 
+        int count = Mathf.Min(records.Count, FearNoSpearConfig.MaxPinsPerCommand);
         ZPackage package = new();
-        SpearLocatorProtocol.WriteHeader(package);
-        package.Write(records.Count);
+        WriteHeader(package);
+        package.Write(count);
 
-        foreach (SpearLocationRecord record in records)
+        for (int i = 0; i < count; ++i)
         {
-            SpearLocatorProtocol.WriteRecord(package, record);
+            WriteRecord(package, records[i]);
         }
 
         ZRoutedRpc.instance.InvokeRoutedRPC(targetPeerId, ResponseRpcName, package);
     }
 
+    private static bool TryResolvePeerPlayerId(long senderPeerId, out long playerId)
+    {
+        playerId = 0L;
+
+        if (ZNet.instance != null && ZNet.instance.IsServer() &&
+            ZRoutedRpc.instance != null && senderPeerId == ZRoutedRpc.instance.GetServerPeerID())
+        {
+            Player? localPlayer = Player.m_localPlayer;
+            if (localPlayer != null)
+            {
+                playerId = localPlayer.GetPlayerID();
+                if (playerId != 0L) return true;
+            }
+        }
+
+        if (senderPeerId == 0L) return false;
+
+        ZNetPeer? peer = ZNet.instance != null ? ZNet.instance.GetPeer(senderPeerId) : null;
+        if (peer != null && !peer.m_characterID.IsNone())
+        {
+            ZDO? characterZdo = ZDOMan.instance != null ? ZDOMan.instance.GetZDO(peer.m_characterID) : null;
+            if (characterZdo != null && characterZdo.IsValid())
+            {
+                playerId = characterZdo.GetLong(ZDOVars.s_playerID, 0L);
+                if (playerId != 0L) return true;
+            }
+        }
+
+        foreach (Player player in Player.GetAllPlayers())
+        {
+            if (player == null) continue;
+
+            ZNetView? nview = player.m_nview;
+            if (nview == null || !nview.IsValid()) continue;
+
+            ZDO zdo = nview.GetZDO();
+            if (zdo == null || !zdo.IsValid() || zdo.GetOwner() != senderPeerId) continue;
+
+            playerId = player.GetPlayerID();
+            if (playerId != 0L) return true;
+        }
+
+        playerId = 0L;
+        return false;
+    }
+
+    private static void WriteHeader(ZPackage package)
+    {
+        package.Write(ProtocolVersion);
+    }
+
+    private static bool TryReadHeader(ZPackage package, string rpcName)
+    {
+        int protocol = package.ReadInt();
+        if (protocol == ProtocolVersion) return true;
+
+        FearNoSpearPlugin.Log.LogWarning($"Ignoring incompatible {rpcName} payload: protocol={protocol}; expected={ProtocolVersion}. Make sure server and client use the same FearNoSpear build.");
+        return false;
+    }
+
+    private static void WriteRecord(ZPackage package, SpearLocationRecord record)
+    {
+        package.Write(record.Key);
+        package.Write(record.Position);
+    }
+
+    private static SpearLocationRecord ReadRecord(ZPackage package)
+    {
+        return new SpearLocationRecord
+        {
+            Key = package.ReadString(),
+            Position = package.ReadVector3()
+        };
+    }
 }

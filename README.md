@@ -11,7 +11,8 @@ FearNoSpear prevents thrown spears from disappearing on long throws, zone unload
 - Rescues the original spear before TTL expiry or unexpected projectile cleanup.
 - Uses Valheim's own `Projectile.SpawnOnHit` path first, then verifies that a matching spear drop exists.
 - Falls back to `ItemDrop.DropItem` only when the native path cannot produce a matching drop.
-- Uses owner-only rescue, a ZDO claim flag, and a 4 meter duplicate check to reduce multiplayer duplicate-spawn risk.
+- Uses owner-only rescue and a ZDO claim flag to reduce multiplayer duplicate-spawn risk.
+- Never deletes an existing spear merely because it matches the rescued spear's item data.
 - Adds a configurable chat command, default `!myspear`, that pins up to 5 thrown spear locations.
 - Optionally removes vanilla death pins when the local player's tombstone is recovered, and removes death pins from deaths that create no tombstone.
 
@@ -85,13 +86,13 @@ These are intentionally not exposed as config options:
 
 - Minimum tracked spear projectile TTL: `60` seconds.
 - Locator pins per command: `5`.
+- Spear detection uses the item skill first, with a case-insensitive `spear` name fallback for compatible modded items.
 - Rescue before TTL expiry: enabled.
 - Rescue on unexpected destroy: enabled.
 - ItemDrop fallback: enabled.
 - Owner-only rescue: enabled.
 - ZDO rescue claim flag: enabled.
-- Nearby duplicate cleanup radius: `4` meters.
-- Verbose debug logging: disabled.
+- Nearby native-drop verification and metadata matching radius: `4` meters.
 
 ## Github
 https://github.com/sighsorry1029/FearNoSpear

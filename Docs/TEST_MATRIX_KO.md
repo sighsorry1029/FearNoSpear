@@ -74,13 +74,13 @@ LastKnownOwnerGraceSeconds = 2
 - 정상 hit에서는 창이 정확히 하나만 남는다.
 - TTL rescue 또는 `ZNetScene.Destroy` rescue 로그가 뜬 경우 창 아이템이 하나 생성된다.
 - 멀티플레이에서 두 클라이언트가 같은 창을 중복 생성하지 않는다.
-- `!myspear` 명령이 최근 추적된 창 위치를 핀으로 표시한다.
-- 창을 주우면 해당 locator 핀과 서버 세션 기록이 정리된다.
+- `!myspear` 명령이 추적된 창 위치를 가까운 순서로 핀으로 표시한다.
+- 창을 주우면 현재 세션에서 만든 해당 locator 핀이 정리된다.
 - RenderLimits loaded/generated 값을 올렸을 때 rescue 빈도나 소실 빈도가 줄어드는지 관찰할 수 있다.
 
 ## 7. 실패 판정
 
-- 창이 2개 이상 생김: owner gate, ZDO claim flag, nearby duplicate cleanup을 확인한다.
+- 창이 2개 이상 생김: owner gate, ZDO claim flag, invalid-ZNetView fallback 시간을 확인한다. 기존 창을 item-data 동등성만으로 삭제해서는 안 된다.
 - rescue 로그는 있는데 item이 없음: `SpawnOnHit` 경로와 `ItemDrop.DropItem` fallback을 확인한다.
 - 화살, 적 투사체, 비창 투사체가 추적됨: spear detection 조건을 확인한다.
 - 월드 종료 중 item이 생성됨: shutdown/world unload guard를 확인한다.

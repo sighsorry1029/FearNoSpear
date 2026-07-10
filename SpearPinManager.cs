@@ -27,16 +27,21 @@ internal static class SpearPinManager
         {
             SpearLocationRecord record = records[i];
             string pinName = count == 1 ? PinName : $"Spear {i + 1}";
-            if (!TryPinPosition(record.Position, pinName, record.Source, showMessage)) continue;
+            if (!TryPinPosition(record.Position, pinName, showMessage)) continue;
 
             ++pinned;
-            RememberPin(record, pinName);
+            ActivePins.Add(new SpearPinRecord
+            {
+                Key = record.Key,
+                Name = pinName,
+                Position = record.Position
+            });
         }
 
         return pinned;
     }
 
-    internal static int RemoveForPickedSpear(string recordKey, Vector3 pickupPosition)
+    internal static int RemoveForPickedSpear(string recordKey)
     {
         Minimap minimap = Minimap.instance;
         if (minimap == null)
@@ -47,7 +52,6 @@ internal static class SpearPinManager
 
         List<SpearPinRecord> trackedPins = ActivePins
             .Where(pin => MatchesPickedSpear(pin, recordKey))
-            .OrderBy(pin => Vector3.SqrMagnitude(pin.Position - pickupPosition))
             .ToList();
         if (trackedPins.Count == 0) return 0;
 
@@ -94,29 +98,8 @@ internal static class SpearPinManager
         return removed;
     }
 
-    private static void RememberPin(SpearLocationRecord record, string pinName)
+    private static bool TryPinPosition(Vector3 position, string pinName, Action<string> showMessage)
     {
-        ActivePins.RemoveAll(pin =>
-            string.Equals(pin.Key, record.Key, StringComparison.Ordinal) &&
-            string.Equals(pin.Name, pinName, StringComparison.Ordinal));
-
-        ActivePins.Add(new SpearPinRecord
-        {
-            Key = record.Key,
-            Name = pinName,
-            Position = record.Position
-        });
-    }
-
-    private static bool TryPinPosition(Vector3 position, string pinName, string source, Action<string> showMessage)
-    {
-        Player localPlayer = Player.m_localPlayer;
-        if (localPlayer == null)
-        {
-            FearNoSpearPlugin.Log.LogInfo("Could not pin spear location because no local player exists.");
-            return false;
-        }
-
         Minimap minimap = Minimap.instance;
         if (minimap == null)
         {
@@ -125,13 +108,6 @@ internal static class SpearPinManager
         }
 
         minimap.DiscoverLocation(position, Minimap.PinType.Icon3, pinName, showMap: true);
-
-        if (FearNoSpearConfig.Verbose)
-        {
-            float distance = Vector3.Distance(localPlayer.transform.position, position);
-            FearNoSpearPlugin.Log.LogInfo($"Pinned known spear from !myspear: source={source}; pos={position}; distance={distance:0.0}m");
-        }
-
         return true;
     }
 

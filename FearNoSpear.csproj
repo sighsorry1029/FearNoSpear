@@ -117,11 +117,8 @@
         <Compile Include="SpearChatCommand.cs"/>
         <Compile Include="SpearItemIdentity.cs"/>
         <Compile Include="SpearLocator.cs"/>
-        <Compile Include="SpearLocatorProtocol.cs"/>
         <Compile Include="SpearNetwork.cs"/>
-        <Compile Include="SpearOwnership.cs"/>
         <Compile Include="SpearPinManager.cs"/>
-        <Compile Include="SpearRecordStore.cs"/>
         <Compile Include="SpearServerRegistry.cs"/>
         <Compile Include="SpearSafetyTracker.cs"/>
         <Compile Include="SpearThrowerMetadata.cs"/>

@@ -18,7 +18,7 @@ namespace FearNoSpear
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.4";
+        public const string ModVersion = "1.0.6";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;
@@ -94,15 +94,6 @@ namespace FearNoSpear
             return configEntry;
         }
 
-        internal ConfigEntry<T> BindConfig<T>(string group, string name, T value, string description, AcceptableValueBase acceptableValues, bool synchronizedSetting = true)
-        {
-            string syncText = synchronizedSetting ? " [Synced with Server]" : " [Not Synced with Server]";
-            ConfigEntry<T> configEntry = Config.Bind(group, name, value, new ConfigDescription(description + syncText, acceptableValues));
-            SyncedConfigEntry<T> syncedConfigEntry = Sync.AddConfigEntry(configEntry);
-            syncedConfigEntry.SynchronizedConfig = synchronizedSetting;
-            return configEntry;
-        }
-
         private void SetupWatcher()
         {
             _watcher = new FileSystemWatcher(Paths.ConfigPath, ConfigFileName)
@@ -158,17 +149,8 @@ namespace FearNoSpear
     {
         internal readonly ConfigEntry<bool> Enabled;
 
-        internal static readonly bool NameFallback = true;
-        internal static readonly bool TrackAllRespawnItemProjectilesForDebug = false;
-        internal static readonly bool ExtendInitialTtl = true;
-        internal static readonly bool RescueBeforeTtlExpiry = true;
-        internal static readonly bool RescueOnUnexpectedDestroy = true;
-        internal static readonly bool UseItemDropFallback = true;
-        internal static readonly bool OnlyOwnerMayRescue = true;
-        internal static readonly bool UseZdoClaimFlag = true;
         internal const float MinimumInitialTtlSeconds = 60f;
         internal const int MaxPinsPerCommand = 5;
-        internal static readonly bool Verbose = false;
 
         internal readonly ConfigEntry<float> TtlRescueWindowSeconds;
         internal readonly ConfigEntry<bool> AllowLastKnownOwnerIfZNetViewInvalid;
@@ -182,7 +164,7 @@ namespace FearNoSpear
                 "Master switch for all FearNoSpear behavior. When disabled, the mod does not track thrown spear projectiles, extend their TTL, or rescue stored spear item data.");
 
             ChatCommand = plugin.BindConfig("General", "ChatCommand", "!myspear",
-                "Chat command used to pin the latest known tracked spear location on the minimap. The comparison is case-insensitive and the command is consumed locally instead of being sent to public chat. Server operators can change this value, such as !spear or !lostspear, and lock it through ServerSync. Leave it empty to disable the chat command.");
+                "Chat command used to pin known thrown spear locations on the minimap, nearest first. The comparison is case-insensitive and the command is consumed locally instead of being sent to public chat. Server operators can change this value, such as !spear or !lostspear, and lock it through ServerSync. Leave it empty to disable the chat command.");
 
             CleanDeathPins = plugin.BindConfig("General", "CleanDeathPins", true,
                 "Removes the vanilla death map pin when the local player's tombstone is recovered, and suppresses the death pin when a death creates no tombstone. This setting is synchronized so server operators can keep the same behavior for all clients.");
@@ -197,10 +179,6 @@ namespace FearNoSpear
                 "Maximum age, in seconds, for the last-known owner state used by the invalid-ZNetView fallback. Lower values reduce duplicate-spawn risk but may miss late cleanup cases; higher values are more forgiving but less conservative in multiplayer.");
         }
 
-        internal int GetMaxPinsPerCommand()
-        {
-            return MaxPinsPerCommand;
-        }
     }
 
     internal static class ReflectionCache
@@ -216,9 +194,6 @@ namespace FearNoSpear
         internal static FieldInfo? F_terminalInput;
         internal static MethodInfo? M_spawnOnHit;
         internal static MethodInfo? M_itemDropDropItem;
-        internal static MethodInfo? M_zNetViewGetZdo;
-        internal static MethodInfo? M_zdoGetBool;
-        internal static MethodInfo? M_zdoSetBool;
         internal static FieldInfo? F_minimapPins;
 
         internal static void Initialize(ManualLogSource log)
@@ -241,9 +216,6 @@ namespace FearNoSpear
             M_itemDropDropItem = AccessTools.Method(typeof(ItemDrop), "DropItem",
                 new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(Vector3), typeof(Quaternion) });
 
-            M_zNetViewGetZdo = AccessTools.Method(typeof(ZNetView), "GetZDO");
-            M_zdoGetBool = AccessTools.Method(typeof(ZDO), "GetBool", new[] { typeof(string), typeof(bool) });
-            M_zdoSetBool = AccessTools.Method(typeof(ZDO), "Set", new[] { typeof(string), typeof(bool) });
             F_minimapPins = AccessTools.Field(typeof(Minimap), "m_pins");
 
             WarnMissing(log, nameof(F_ttl), F_ttl);
@@ -253,6 +225,7 @@ namespace FearNoSpear
             WarnMissing(log, nameof(F_weapon), F_weapon);
             WarnMissing(log, nameof(F_spawnItem), F_spawnItem);
             WarnMissing(log, nameof(F_respawnItemOnHit), F_respawnItemOnHit);
+            WarnMissing(log, nameof(F_groundHitOnly), F_groundHitOnly);
             WarnMissing(log, nameof(F_terminalInput), F_terminalInput);
             WarnMissing(log, nameof(M_spawnOnHit), M_spawnOnHit);
             WarnMissing(log, nameof(M_itemDropDropItem), M_itemDropDropItem);
@@ -311,14 +284,10 @@ namespace FearNoSpear
         internal static bool IsTrackedSpearProjectile(Projectile projectile)
         {
             if (!IsRecoverableProjectile(projectile)) return false;
-            if (FearNoSpearConfig.TrackAllRespawnItemProjectilesForDebug) return true;
-
             ItemDrop.ItemData? spawnItem = ReflectionCache.Get<ItemDrop.ItemData?>(ReflectionCache.F_spawnItem, projectile, null);
             ItemDrop.ItemData? weapon = ReflectionCache.Get<ItemDrop.ItemData?>(ReflectionCache.F_weapon, projectile, null);
 
             if (IsSpearItem(spawnItem) || IsSpearItem(weapon)) return true;
-
-            if (!FearNoSpearConfig.NameFallback) return false;
 
             string projectileName = projectile.name ?? string.Empty;
             return ContainsSpearToken(projectileName);
@@ -335,16 +304,13 @@ namespace FearNoSpear
                 return true;
             }
 
-            if (!FearNoSpearConfig.NameFallback) return false;
-
             return ContainsSpearToken(item.m_shared.m_name);
         }
 
         private static bool ContainsSpearToken(string? value)
         {
             if (value == null || value.Length == 0) return false;
-            return value.IndexOf("spear", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   value.IndexOf("$item_spear", StringComparison.OrdinalIgnoreCase) >= 0;
+            return value.IndexOf("spear", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         internal static string DescribeProjectile(Projectile projectile)
@@ -364,7 +330,7 @@ namespace FearNoSpear
         private static void Postfix(Projectile __instance)
         {
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
-            SpearSafetyTracker.GetOrArmIfTracked(__instance, "Projectile.Setup");
+            SpearSafetyTracker.GetOrArmIfTracked(__instance);
         }
     }
 
@@ -375,7 +341,7 @@ namespace FearNoSpear
         {
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return true;
             SpearSafetyTracker? tracker = __instance.GetComponent<SpearSafetyTracker>() ??
-                                          SpearSafetyTracker.GetOrArmIfTracked(__instance, "Projectile.FixedUpdate");
+                                          SpearSafetyTracker.GetOrArmIfTracked(__instance);
             if (tracker == null) return true;
 
             bool rescuedAndDestroyed = tracker.TryTtlRescueAndDestroyIfNeeded();
@@ -395,7 +361,7 @@ namespace FearNoSpear
     [HarmonyPatch(typeof(Humanoid), "Pickup", new[] { typeof(GameObject), typeof(bool), typeof(bool) })]
     internal static class HumanoidPickupPatch
     {
-        private static void Prefix(Humanoid __instance, GameObject go, out PickedSpearState? __state)
+        private static void Prefix(Humanoid __instance, GameObject go, out string? __state)
         {
             __state = null;
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
@@ -406,26 +372,13 @@ namespace FearNoSpear
             if (drop == null || drop.m_itemData == null) return;
             if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) return;
 
-            string itemKey = SpearItemIdentity.BuildLocatorKey(drop.m_itemData);
-            __state = new PickedSpearState
-            {
-                ItemKey = itemKey,
-                RecordKey = SpearItemIdentity.BuildDropRecordKey(drop, itemKey),
-                Position = go.transform.position
-            };
+            __state = SpearItemIdentity.BuildDropRecordKey(drop);
         }
 
-        private static void Postfix(bool __result, PickedSpearState? __state)
+        private static void Postfix(bool __result, string? __state)
         {
-            if (!__result || __state == null) return;
-            SpearLocator.MarkSpearPickedUp(__state.RecordKey, __state.ItemKey, __state.Position);
-        }
-
-        private sealed class PickedSpearState
-        {
-            internal string RecordKey = string.Empty;
-            internal string ItemKey = string.Empty;
-            internal Vector3 Position;
+            if (!__result || __state == null || __state.Length == 0) return;
+            SpearLocator.MarkSpearPickedUp(__state);
         }
     }
 
@@ -447,6 +400,7 @@ namespace FearNoSpear
     {
         private static void Postfix()
         {
+            DeathPinCleaner.UpdatePendingDeath();
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
             SpearSafetyTracker.UpdatePendingDropTags();
             SpearLocator.UpdatePendingServerRequest();
@@ -480,7 +434,7 @@ namespace FearNoSpear
             if (!ReflectionCache.Get(ReflectionCache.F_didHit, __instance, false)) return;
 
             SpearSafetyTracker tracker = __instance.GetComponent<SpearSafetyTracker>();
-            tracker?.MarkNormalHit("Projectile.OnHit");
+            tracker?.MarkNormalHit();
         }
     }
 
@@ -500,7 +454,6 @@ namespace FearNoSpear
         private static void Prefix(GameObject __0)
         {
             if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
-            if (!FearNoSpearConfig.RescueOnUnexpectedDestroy) return;
             if (__0 == null) return;
 
             SpearSafetyTracker? tracker = __0.GetComponent<SpearSafetyTracker>();
@@ -509,7 +462,7 @@ namespace FearNoSpear
                 Projectile? projectile = __0.GetComponent<Projectile>();
                 if (projectile != null)
                 {
-                    tracker = SpearSafetyTracker.GetOrArmIfTracked(projectile, "ZNetScene.Destroy");
+                    tracker = SpearSafetyTracker.GetOrArmIfTracked(projectile);
                 }
             }
 

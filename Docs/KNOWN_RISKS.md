@@ -2,12 +2,14 @@
 
 ## Duplicate items
 
-The main risk is duplicate spear creation in multiplayer. The draft mitigates this with:
+The main risk is duplicate spear creation in multiplayer. The mod mitigates this with:
 
-- `OnlyOwnerMayRescue`,
+- owner-only rescue,
 - `AllowLastKnownOwnerIfZNetViewInvalid`,
-- `UseZdoClaimFlag`,
-- local instance rescue set.
+- a ZDO rescue claim flag,
+- one rescue attempt per local tracker.
+
+The mod does not delete nearby equivalent drops as duplicate cleanup because item-data equivalence is not a unique throw identity.
 
 These must be tested on a dedicated server.
 
@@ -31,6 +33,6 @@ Spawning the item at the projectile position may create an item far from the pla
 
 RenderLimits and SkadiNet may patch nearby systems. Keep this mod narrow:
 
-- patch only `Projectile` and `ZNetScene.Destroy(GameObject)`,
+- keep rescue behavior limited to `Projectile` and `ZNetScene.Destroy(GameObject)`,
 - use postfix/prefix conservatively,
 - avoid changing global zone or ZDO scheduling behavior.

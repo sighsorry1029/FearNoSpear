@@ -54,11 +54,6 @@ internal static class SpearThrowerMetadata
 
         Character owner = projectile.m_owner;
         Player? ownerPlayer = owner as Player;
-        if (ownerPlayer == null && owner != null && owner == Player.m_localPlayer)
-        {
-            ownerPlayer = Player.m_localPlayer;
-        }
-
         if (ownerPlayer == null) return false;
 
         playerId = ownerPlayer.GetPlayerID();
