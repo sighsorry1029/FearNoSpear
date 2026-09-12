@@ -50,8 +50,17 @@ internal static class SpearNetwork
         serverPeerId = 0L;
         if (ZNet.instance == null || ZRoutedRpc.instance == null) return false;
 
-        serverPeerId = ZRoutedRpc.instance.GetServerPeerID();
-        return serverPeerId != 0L || ZNet.instance.IsServer();
+        if (ZNet.instance.IsServer())
+        {
+            serverPeerId = ZNet.GetUID();
+            return true;
+        }
+
+        ZNetPeer? serverPeer = ZNet.instance.GetServerPeer();
+        if (serverPeer == null) return false;
+
+        serverPeerId = serverPeer.m_uid;
+        return serverPeerId != 0L;
     }
 
     private static void RPC_RequestSpearLocation(long senderPeerId, ZPackage package)
@@ -151,8 +160,7 @@ internal static class SpearNetwork
     {
         playerId = 0L;
 
-        if (ZNet.instance != null && ZNet.instance.IsServer() &&
-            ZRoutedRpc.instance != null && senderPeerId == ZRoutedRpc.instance.GetServerPeerID())
+        if (ZNet.instance != null && ZNet.instance.IsServer() && senderPeerId == ZNet.GetUID())
         {
             Player? localPlayer = Player.m_localPlayer;
             if (localPlayer != null)
@@ -179,7 +187,7 @@ internal static class SpearNetwork
         {
             if (player == null) continue;
 
-            ZNetView? nview = player.m_nview;
+            ZNetView? nview = ReflectionCache.GetNView(player);
             if (nview == null || !nview.IsValid()) continue;
 
             ZDO zdo = nview.GetZDO();

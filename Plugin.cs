@@ -12,13 +12,15 @@ using UnityEngine;
 namespace FearNoSpear
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    [BepInDependency(ClanTombstoneCompatibility.PluginGuid,
+        BepInDependency.DependencyFlags.SoftDependency)]
     public sealed class FearNoSpearPlugin : BaseUnityPlugin
     {
         public const string Author = "sighsorry";
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.6";
+        public const string ModVersion = "1.0.8";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;
@@ -55,7 +57,7 @@ namespace FearNoSpear
             Config.SaveOnConfigSet = false;
 
             _serverConfigLocked = BindConfig("General", "Lock Configuration", Toggle.On,
-                "Locks the synchronized gameplay settings to the server's config when the mod is installed on a server. Keep this on for multiplayer servers so every client uses the same spear rescue timing and ownership safety rules.");
+                "Locks the synchronized gameplay settings to the server's config when the mod is installed on a server. Keep this on for multiplayer servers so every client uses the same spear rescue timing, ownership safety, and tombstone access rules.");
             Sync.AddLockingConfigEntry(_serverConfigLocked);
 
             Cfg = new FearNoSpearConfig(this);
@@ -157,17 +159,21 @@ namespace FearNoSpear
         internal readonly ConfigEntry<float> LastKnownOwnerGraceSeconds;
         internal readonly ConfigEntry<string> ChatCommand;
         internal readonly ConfigEntry<bool> CleanDeathPins;
+        internal readonly ConfigEntry<bool> OwnerOnlyTombstones;
 
         internal FearNoSpearConfig(FearNoSpearPlugin plugin)
         {
             Enabled = plugin.BindConfig("General", "Enabled", true,
-                "Master switch for all FearNoSpear behavior. When disabled, the mod does not track thrown spear projectiles, extend their TTL, or rescue stored spear item data.");
+                "Master switch for all FearNoSpear behavior. When disabled, spear protection, the chat locator, death pin cleanup, and tombstone access protection are all inactive.");
 
             ChatCommand = plugin.BindConfig("General", "ChatCommand", "!myspear",
                 "Chat command used to pin known thrown spear locations on the minimap, nearest first. The comparison is case-insensitive and the command is consumed locally instead of being sent to public chat. Server operators can change this value, such as !spear or !lostspear, and lock it through ServerSync. Leave it empty to disable the chat command.");
 
             CleanDeathPins = plugin.BindConfig("General", "CleanDeathPins", true,
                 "Removes the vanilla death map pin when the local player's tombstone is recovered, and suppresses the death pin when a death creates no tombstone. This setting is synchronized so server operators can keep the same behavior for all clients.");
+
+            OwnerOnlyTombstones = plugin.BindConfig("General", "OwnerOnlyTombstones", true,
+                "Prevents players from opening or auto-looting a tombstone owned by another player. A server administrator or the local host can bypass the lock only while Valheim devcommands and debug mode are active. When the optional Clan mod is installed, members of the local player's active Clan roster, including Guests, may also recover it. Tombstones without a valid owner ID remain accessible so malformed or uninitialized tombstones are not permanently locked. This setting is synchronized and enabled by default.");
 
             TtlRescueWindowSeconds = plugin.BindConfig("Rescue", "TTLRescueWindowSeconds", 1f,
                 "How close to projectile TTL expiry the mod should rescue a still-airborne tracked spear. A value of 1.0 means the stored spear item is respawned during the final second of projectile lifetime if no normal hit occurred. Increase this if projectiles are still being cleaned up before rescue; decrease it if rescued spears feel like they stop flying too early.");
@@ -192,8 +198,12 @@ namespace FearNoSpear
         internal static FieldInfo? F_respawnItemOnHit;
         internal static FieldInfo? F_groundHitOnly;
         internal static FieldInfo? F_terminalInput;
+        internal static FieldInfo? F_projectileOwner;
+        internal static FieldInfo? F_characterNView;
+        internal static FieldInfo? F_tombstoneContainer;
         internal static MethodInfo? M_spawnOnHit;
         internal static MethodInfo? M_itemDropDropItem;
+        internal static MethodInfo? M_tombstoneGetOwner;
         internal static FieldInfo? F_minimapPins;
 
         internal static void Initialize(ManualLogSource log)
@@ -207,6 +217,9 @@ namespace FearNoSpear
             F_respawnItemOnHit = AccessTools.Field(typeof(Projectile), "m_respawnItemOnHit");
             F_groundHitOnly = AccessTools.Field(typeof(Projectile), "m_groundHitOnly");
             F_terminalInput = AccessTools.Field(typeof(Terminal), "m_input");
+            F_projectileOwner = AccessTools.Field(typeof(Projectile), "m_owner");
+            F_characterNView = AccessTools.Field(typeof(Character), "m_nview");
+            F_tombstoneContainer = AccessTools.Field(typeof(TombStone), "m_container");
 
             M_spawnOnHit = AccessTools.Method(typeof(Projectile), "SpawnOnHit",
                     new[] { typeof(GameObject), typeof(Collider), typeof(Vector3) })
@@ -215,6 +228,7 @@ namespace FearNoSpear
                 ?? AccessTools.Method(typeof(Projectile), "SpawnOnHit");
             M_itemDropDropItem = AccessTools.Method(typeof(ItemDrop), "DropItem",
                 new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(Vector3), typeof(Quaternion) });
+            M_tombstoneGetOwner = AccessTools.Method(typeof(TombStone), "GetOwner");
 
             F_minimapPins = AccessTools.Field(typeof(Minimap), "m_pins");
 
@@ -227,8 +241,12 @@ namespace FearNoSpear
             WarnMissing(log, nameof(F_respawnItemOnHit), F_respawnItemOnHit);
             WarnMissing(log, nameof(F_groundHitOnly), F_groundHitOnly);
             WarnMissing(log, nameof(F_terminalInput), F_terminalInput);
+            WarnMissing(log, nameof(F_projectileOwner), F_projectileOwner);
+            WarnMissing(log, nameof(F_characterNView), F_characterNView);
+            WarnMissing(log, nameof(F_tombstoneContainer), F_tombstoneContainer);
             WarnMissing(log, nameof(M_spawnOnHit), M_spawnOnHit);
             WarnMissing(log, nameof(M_itemDropDropItem), M_itemDropDropItem);
+            WarnMissing(log, nameof(M_tombstoneGetOwner), M_tombstoneGetOwner);
             WarnMissing(log, nameof(F_minimapPins), F_minimapPins);
         }
 
@@ -267,6 +285,35 @@ namespace FearNoSpear
         internal static ZNetView? GetNView(Projectile projectile)
         {
             return Get<ZNetView?>(F_nview, projectile, null);
+        }
+
+        internal static ZNetView? GetNView(Character character)
+        {
+            return Get<ZNetView?>(F_characterNView, character, null);
+        }
+
+        internal static Character? GetProjectileOwner(Projectile projectile)
+        {
+            return Get<Character?>(F_projectileOwner, projectile, null);
+        }
+
+        internal static Container? GetTombstoneContainer(TombStone tombstone)
+        {
+            return Get<Container?>(F_tombstoneContainer, tombstone, null);
+        }
+
+        internal static long GetTombstoneOwner(TombStone tombstone)
+        {
+            if (M_tombstoneGetOwner == null || tombstone == null) return 0L;
+            try
+            {
+                object? value = M_tombstoneGetOwner.Invoke(tombstone, null);
+                return value is long ownerId ? ownerId : 0L;
+            }
+            catch
+            {
+                return 0L;
+            }
         }
     }
 

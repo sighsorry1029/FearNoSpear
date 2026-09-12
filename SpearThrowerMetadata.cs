@@ -52,7 +52,7 @@ internal static class SpearThrowerMetadata
         playerId = 0L;
         if (projectile == null) return false;
 
-        Character owner = projectile.m_owner;
+        Character? owner = ReflectionCache.GetProjectileOwner(projectile);
         Player? ownerPlayer = owner as Player;
         if (ownerPlayer == null) return false;
 

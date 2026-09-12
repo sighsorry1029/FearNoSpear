@@ -1,6 +1,9 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using BepInEx.Bootstrap;
 using HarmonyLib;
 using UnityEngine;
 
@@ -59,7 +62,7 @@ internal static class DeathPinCleaner
         if (!IsEnabled()) return;
         if (tombstone == null) return;
 
-        long ownerId = tombstone.GetOwner();
+        long ownerId = ReflectionCache.GetTombstoneOwner(tombstone);
         if (ownerId == 0L || ownerId != GetLocalPlayerId()) return;
 
         int instanceId = tombstone.GetInstanceID();
@@ -113,7 +116,7 @@ internal static class DeathPinCleaner
     {
         if (tombstone == null) return false;
 
-        long ownerId = tombstone.GetOwner();
+        long ownerId = ReflectionCache.GetTombstoneOwner(tombstone);
         long localPlayerId = GetLocalPlayerId();
         return ownerId != 0L && ownerId == localPlayerId;
     }
@@ -130,7 +133,7 @@ internal static class DeathPinCleaner
 
     private static bool IsTombstoneEmpty(TombStone tombstone)
     {
-        Container? container = tombstone.m_container;
+        Container? container = ReflectionCache.GetTombstoneContainer(tombstone);
         Inventory? inventory = container != null ? container.GetInventory() : null;
         return inventory != null && inventory.NrOfItems() <= 0;
     }
@@ -193,6 +196,173 @@ internal static class TombStoneSetupDeathPinPatch
     private static void Postfix(TombStone __instance)
     {
         DeathPinCleaner.RegisterTombstone(__instance);
+    }
+}
+
+[HarmonyPatch(typeof(TombStone), nameof(TombStone.Interact),
+    new[] { typeof(Humanoid), typeof(bool), typeof(bool) })]
+internal static class TombStoneOwnerOnlyInteractPatch
+{
+    private static bool Prefix(TombStone __instance, Humanoid __0, bool __1, ref bool __result)
+    {
+        if (!FearNoSpearPlugin.Cfg.Enabled.Value ||
+            !FearNoSpearPlugin.Cfg.OwnerOnlyTombstones.Value)
+        {
+            return true;
+        }
+
+        long ownerId = ReflectionCache.GetTombstoneOwner(__instance);
+        if (ownerId == 0L)
+        {
+            return true;
+        }
+
+        Player? player = __0 as Player;
+        if (player != null &&
+            (player.GetPlayerID() == ownerId ||
+             HasAdminDebugBypass(player) ||
+             ClanTombstoneCompatibility.IsMemberOfLocalClan(player, ownerId)))
+        {
+            return true;
+        }
+
+        if (!__1 && __0 != null)
+        {
+            __0.Message(MessageHud.MessageType.Center, "$msg_cantpickup");
+        }
+
+        __result = false;
+        return false;
+    }
+
+    private static bool HasAdminDebugBypass(Player player)
+    {
+        return player == Player.m_localPlayer &&
+               Player.m_debugMode &&
+               Console.instance != null &&
+               Console.instance.IsCheatsEnabled() &&
+               ZNet.instance != null &&
+               ZNet.instance.LocalPlayerIsAdminOrHost();
+    }
+}
+
+internal static class ClanTombstoneCompatibility
+{
+    internal const string PluginGuid = "sighsorry.Clan";
+    private const int MinimumApiVersion = 5;
+
+    private static bool _initialized;
+    private static bool _available;
+    private static PropertyInfo? _currentProperty;
+    private static PropertyInfo? _isReadyProperty;
+    private static PropertyInfo? _membersProperty;
+    private static PropertyInfo? _memberPlayerIdProperty;
+
+    internal static bool IsMemberOfLocalClan(Player player, long ownerId)
+    {
+        if (player == null || player != Player.m_localPlayer || ownerId == 0L)
+        {
+            return false;
+        }
+
+        EnsureInitialized();
+        if (!_available)
+        {
+            return false;
+        }
+
+        try
+        {
+            object? snapshot = _currentProperty!.GetValue(null, null);
+            if (snapshot == null ||
+                _isReadyProperty!.GetValue(snapshot, null) is not bool isReady ||
+                !isReady ||
+                _membersProperty!.GetValue(snapshot, null) is not IEnumerable members)
+            {
+                return false;
+            }
+
+            foreach (object? member in members)
+            {
+                if (member != null &&
+                    _memberPlayerIdProperty!.GetValue(member, null) is long memberPlayerId &&
+                    memberPlayerId == ownerId)
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _available = false;
+            FearNoSpearPlugin.Log.LogWarning(
+                $"Clan tombstone compatibility was disabled after an API read failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    private static void EnsureInitialized()
+    {
+        if (_initialized)
+        {
+            return;
+        }
+
+        _initialized = true;
+        if (!Chainloader.PluginInfos.TryGetValue(PluginGuid, out BepInEx.PluginInfo pluginInfo) ||
+            pluginInfo.Instance == null)
+        {
+            return;
+        }
+
+        try
+        {
+            Assembly assembly = pluginInfo.Instance.GetType().Assembly;
+            Type? apiType = assembly.GetType("Clan.ClanApi", throwOnError: false);
+            FieldInfo? apiVersionField = apiType?.GetField(
+                "ApiVersion",
+                BindingFlags.Public | BindingFlags.Static);
+            int apiVersion = apiVersionField?.GetValue(null) is int value ? value : 0;
+            if (apiVersion < MinimumApiVersion)
+            {
+                FearNoSpearPlugin.Log.LogWarning(
+                    $"Clan tombstone compatibility requires Clan API v{MinimumApiVersion} or newer; found v{apiVersion}.");
+                return;
+            }
+
+            _currentProperty = apiType!.GetProperty(
+                "Current",
+                BindingFlags.Public | BindingFlags.Static);
+            Type? snapshotType = _currentProperty?.PropertyType;
+            _isReadyProperty = snapshotType?.GetProperty(
+                "IsReady",
+                BindingFlags.Public | BindingFlags.Instance);
+            _membersProperty = snapshotType?.GetProperty(
+                "Members",
+                BindingFlags.Public | BindingFlags.Instance);
+            Type? memberType = _membersProperty?.PropertyType.IsGenericType == true
+                ? _membersProperty.PropertyType.GetGenericArguments().FirstOrDefault()
+                : assembly.GetType("Clan.ClanMemberInfo", throwOnError: false);
+            _memberPlayerIdProperty = memberType?.GetProperty(
+                "PlayerId",
+                BindingFlags.Public | BindingFlags.Instance);
+
+            _available = _currentProperty != null &&
+                         _isReadyProperty?.PropertyType == typeof(bool) &&
+                         _membersProperty != null &&
+                         _memberPlayerIdProperty?.PropertyType == typeof(long);
+            if (!_available)
+            {
+                FearNoSpearPlugin.Log.LogWarning(
+                    "Clan tombstone compatibility could not bind the required Clan API members.");
+            }
+        }
+        catch (Exception ex)
+        {
+            FearNoSpearPlugin.Log.LogWarning(
+                $"Clan tombstone compatibility could not initialize: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 }
 

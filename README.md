@@ -2,7 +2,7 @@
 
 ![](https://i.ibb.co/dJbNstbC/Video-Project-27.gif)
 
-FearNoSpear prevents thrown spears from disappearing on long throws, zone unloads, and network cleanup. It also adds a chat locator for tracked spears and can clean up vanilla death pins when tombstones are recovered.
+FearNoSpear prevents thrown spears from disappearing on long throws, zone unloads, and network cleanup. It also adds a chat locator for tracked spears and small tombstone quality-of-life protections.
 
 ## Features
 
@@ -15,6 +15,8 @@ FearNoSpear prevents thrown spears from disappearing on long throws, zone unload
 - Never deletes an existing spear merely because it matches the rescued spear's item data.
 - Adds a configurable chat command, default `!myspear`, that pins up to 5 thrown spear locations.
 - Optionally removes vanilla death pins when the local player's tombstone is recovered, and removes death pins from deaths that create no tombstone.
+- Prevents other players from opening or auto-looting an owned tombstone by default.
+- Allows members of the owner's Clan, including Guests, to recover the tombstone when the optional Clan mod is installed.
 
 ## Chat Locator
 
@@ -38,6 +40,14 @@ When a tracked spear is picked up, locator pins created by the current session a
 
 The cleanup only targets saved minimap pins of type `Death` near the matching death or tombstone position.
 
+## Tombstone Access
+
+`OwnerOnlyTombstones` prevents a player from opening or auto-looting another player's tombstone. The owner is matched by Valheim's player ID stored on the tombstone, not by player name.
+
+A server administrator or the local host can bypass the lock only while Valheim devcommands and debug mode are both active. When the optional `sighsorry.Clan` mod is installed, anyone in the local player's active Clan roster may recover the tombstone; this includes the Guest role. Clan's normal gameplay rule applies, so a Guest clan takes precedence over the player's primary clan when choosing the active roster.
+
+Tombstones with no valid owner ID are left accessible to avoid permanently locking malformed or uninitialized objects. If Clan is absent, its state is not ready, or its API is incompatible, access safely falls back to the owner and admin-debug rules. This is a synchronized gameplay rule for normal modded clients, not an anti-cheat boundary against a deliberately modified client.
+
 ## Config
 
 Available config options:
@@ -48,6 +58,7 @@ Lock Configuration = On
 Enabled = true
 ChatCommand = !myspear
 CleanDeathPins = true
+OwnerOnlyTombstones = true
 
 [Rescue]
 TTLRescueWindowSeconds = 1.0
@@ -61,13 +72,17 @@ LastKnownOwnerGraceSeconds = 2
 Locks synchronized settings to the authoritative config.
 
 `Enabled`  
-Master switch for spear tracking, rescue, locator, and death pin cleanup.
+Master switch for spear tracking, rescue, locator, death pin cleanup, and tombstone access protection.
 
 `ChatCommand`  
 Chat command used to pin known tracked spear locations. The comparison is case-insensitive. Leave empty to disable the chat command.
 
 `CleanDeathPins`  
 Enables death pin cleanup for recovered tombstones and deaths that create no tombstone.
+
+`OwnerOnlyTombstones`
+
+Prevents players from opening or auto-looting tombstones owned by another player. Administrators and the local host can bypass it while devcommands and debug mode are active. With Clan installed, the active roster, including Guests, is also allowed. Enabled by default and synchronized through ServerSync.
 
 ### Rescue
 
