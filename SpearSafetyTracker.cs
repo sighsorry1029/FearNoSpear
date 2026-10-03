@@ -246,7 +246,7 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         bool spawnOnHitWouldNoOp = ReflectionCache.Get(ReflectionCache.F_groundHitOnly, projectile, false);
         if (!spawnOnHitWouldNoOp)
         {
-            TrySpawnOriginalItemThroughValheimPath(projectile, normal);
+            SpawnThroughValheimPath(projectile, normal);
             if (_spawnedDrop != null)
             {
                 drop = _spawnedDrop;
@@ -257,68 +257,37 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         return TryDropStoredItem(projectile, spawnItem, _lastPosition, out drop);
     }
 
-    private static bool TrySpawnOriginalItemThroughValheimPath(Projectile projectile, Vector3 normal)
+    private static void SpawnThroughValheimPath(Projectile projectile, Vector3 normal)
     {
         MethodInfo? method = ReflectionCache.M_spawnOnHit;
-        if (method == null) return false;
+        if (method == null) return;
 
         try
         {
-            object?[] args = BuildSpawnOnHitArguments(method, normal);
-            method.Invoke(projectile, args);
-            return true;
+            method.Invoke(projectile, new object?[] { null, null, normal });
         }
         catch
         {
-            return false;
+            // The exact returned drop, not invocation success, decides whether fallback is needed.
         }
     }
 
     private static bool TryDropStoredItem(Projectile projectile, ItemDrop.ItemData spawnItem, Vector3 position, out ItemDrop drop)
     {
         drop = null!;
-        MethodInfo? method = ReflectionCache.M_itemDropDropItem;
-        if (method == null) return false;
-
         try
         {
-            ItemDrop? spawnedDrop = method.Invoke(
-                null,
-                new object[] { spawnItem, 1, position, projectile.transform.rotation }) as ItemDrop;
+            ItemDrop? spawnedDrop = ItemDrop.DropItem(spawnItem, 1, position, projectile.transform.rotation);
             if (spawnedDrop == null) return false;
 
             drop = spawnedDrop;
             return true;
-        }
-        catch (TargetInvocationException ex)
-        {
-            FearNoSpearPlugin.Log.LogWarning($"ItemDrop fallback failed while rescuing spear: {ex.InnerException?.GetType().Name ?? ex.GetType().Name}: {ex.InnerException?.Message ?? ex.Message}");
-            return false;
         }
         catch (Exception ex)
         {
             FearNoSpearPlugin.Log.LogWarning($"ItemDrop fallback failed while rescuing spear: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
-    }
-
-    private static object?[] BuildSpawnOnHitArguments(MethodInfo method, Vector3 normal)
-    {
-        ParameterInfo[] parameters = method.GetParameters();
-        object?[] args = new object?[parameters.Length];
-
-        for (int i = 0; i < parameters.Length; ++i)
-        {
-            Type type = parameters[i].ParameterType;
-            if (type == typeof(Vector3)) args[i] = normal;
-            else if (!type.IsValueType) args[i] = null;
-            else if (type == typeof(bool)) args[i] = false;
-            else if (type == typeof(int)) args[i] = 0;
-            else if (type == typeof(float)) args[i] = 0f;
-            else args[i] = Activator.CreateInstance(type);
-        }
-
-        return args;
     }
 
     private readonly struct NetworkRescueClaim

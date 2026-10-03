@@ -19,9 +19,9 @@ These must be tested on a dedicated server.
 
 The mod should avoid rescuing arrows, bolts, enemy projectiles, harpoons, or modded recoverable projectiles unless intentionally configured. Detection currently requires recoverable item behavior plus spear-like item metadata/name.
 
-## Null SpawnOnHit parameters
+## Rescue spawn contract
 
-The draft builds `SpawnOnHit` arguments dynamically and passes null/default values except for a `Vector3` normal. Codex should confirm this matches the current Valheim method behavior.
+Rescue invokes the same private `SpawnOnHit(GameObject, Collider, Vector3)` overload targeted by the drop transpiler, with null hit object/collider and the stored-velocity normal. Ground-hit-only projectiles skip that path because null terrain would make it a no-op. Only the exact drop recorded by the wrapper confirms success; otherwise the public `ItemDrop.DropItem(ItemData, int, Vector3, Quaternion)` fallback runs. Both call paths contain spawn exceptions, and failed rescue still releases its claim. Client and dedicated-server 1.0.16 originals have these contracts; this inspection and offline checks do not verify Harmony execution or multiplayer duplication behavior.
 
 ## OnDestroy timing
 

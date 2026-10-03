@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -206,7 +205,6 @@ namespace FearNoSpear
         internal static FieldInfo? F_characterNView;
         internal static FieldInfo? F_tombstoneContainer;
         internal static MethodInfo? M_spawnOnHit;
-        internal static MethodInfo? M_itemDropDropItem;
         internal static MethodInfo? M_tombstoneGetOwner;
         internal static FieldInfo? F_minimapPins;
 
@@ -225,12 +223,7 @@ namespace FearNoSpear
             F_tombstoneContainer = AccessTools.Field(typeof(TombStone), "m_container");
 
             M_spawnOnHit = AccessTools.Method(typeof(Projectile), "SpawnOnHit",
-                    new[] { typeof(GameObject), typeof(Collider), typeof(Vector3) })
-                ?? AccessTools.GetDeclaredMethods(typeof(Projectile))
-                    .FirstOrDefault(m => m.Name == "SpawnOnHit" && m.GetParameters().Any(p => p.ParameterType == typeof(Vector3)))
-                ?? AccessTools.Method(typeof(Projectile), "SpawnOnHit");
-            M_itemDropDropItem = AccessTools.Method(typeof(ItemDrop), "DropItem",
-                new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(Vector3), typeof(Quaternion) });
+                new[] { typeof(GameObject), typeof(Collider), typeof(Vector3) });
             M_tombstoneGetOwner = AccessTools.Method(typeof(TombStone), "GetOwner");
 
             F_minimapPins = AccessTools.Field(typeof(Minimap), "m_pins");
@@ -247,7 +240,6 @@ namespace FearNoSpear
             WarnMissing(log, nameof(F_characterNView), F_characterNView);
             WarnMissing(log, nameof(F_tombstoneContainer), F_tombstoneContainer);
             WarnMissing(log, nameof(M_spawnOnHit), M_spawnOnHit);
-            WarnMissing(log, nameof(M_itemDropDropItem), M_itemDropDropItem);
             WarnMissing(log, nameof(M_tombstoneGetOwner), M_tombstoneGetOwner);
             WarnMissing(log, nameof(F_minimapPins), F_minimapPins);
         }

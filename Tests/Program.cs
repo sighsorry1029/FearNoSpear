@@ -150,6 +150,8 @@ internal static class Program
             .Any(i => i.OpCode == OpCodes.Ldfld && i.Operand is FieldReference f && f.Name == name)),
             "normal-hit and one-attempt guards remain");
 
+        CheckRescueSpawnContracts(game, mod);
+
         List<string> inaccessible = new List<string>();
         foreach (TypeDefinition type in AllTypes(mod.Types).Where(t => t.Namespace == "FearNoSpear" || t.FullName.StartsWith("FearNoSpear.")))
         foreach (MethodDefinition method in type.Methods.Where(m => m.HasBody))
@@ -167,6 +169,42 @@ internal static class Program
             }
         }
         Expect(inaccessible.Count == 0, "no direct non-public game member access: " + string.Join(", ", inaccessible.Distinct()));
+    }
+
+    private static void CheckRescueSpawnContracts(ModuleDefinition game, ModuleDefinition mod)
+    {
+        MethodDefinition nativeSpawn = Method(game, "Projectile", "SpawnOnHit");
+        Expect(nativeSpawn.IsPrivate && !nativeSpawn.IsStatic && nativeSpawn.ReturnType.FullName == "System.Void" &&
+            nativeSpawn.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(
+                new[] { "UnityEngine.GameObject", "UnityEngine.Collider", "UnityEngine.Vector3" }),
+            "original SpawnOnHit has the exact private three-argument contract used by the patch and rescue");
+        MethodDefinition fallback = Method(mod, "FearNoSpear.SpearSafetyTracker", "TryDropStoredItem");
+        MethodReference drop = Calls(fallback).Single(m => m.DeclaringType.FullName == "ItemDrop" && m.Name == "DropItem");
+        Expect(drop.Resolve().IsPublic && drop.Resolve().IsStatic &&
+            drop.ReturnType.FullName == "ItemDrop" && drop.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(
+                new[] { "ItemDrop/ItemData", "System.Int32", "UnityEngine.Vector3", "UnityEngine.Quaternion" }),
+            "rescue fallback calls the original public DropItem overload directly");
+        Expect(fallback.Body.ExceptionHandlers.Any(h => h.CatchType?.FullName == "System.Exception") &&
+            Calls(fallback).Any(m => m.Name == "LogWarning"),
+            "direct fallback still contains and reports spawn exceptions");
+        MethodDefinition nativeCall = Method(mod, "FearNoSpear.SpearSafetyTracker", "SpawnThroughValheimPath");
+        var code = nativeCall.Body.Instructions;
+        Instruction args = code.Single(i => i.OpCode == OpCodes.Newarr);
+        Instruction normal = code.Single(i => i.OpCode == OpCodes.Stelem_Ref);
+        Expect(args.Previous.OpCode == OpCodes.Ldc_I4_3 &&
+            normal.Previous.OpCode == OpCodes.Box && ((TypeReference)normal.Previous.Operand).FullName == "UnityEngine.Vector3" &&
+            normal.Previous.Previous.OpCode == OpCodes.Ldarg_1 &&
+            normal.Previous.Previous.Previous.OpCode == OpCodes.Ldc_I4_2,
+            "native rescue passes null hit object, null collider, and the supplied normal in slot two");
+        Expect(Calls(nativeCall).Any(m => m.Name == "Invoke") && nativeCall.Body.ExceptionHandlers.Count > 0 &&
+            !Calls(nativeCall).Any(m => m.Name == "GetParameters" || m.Name == "CreateInstance"),
+            "private spawn remains a guarded reflection call without speculative parameter construction");
+        MethodDefinition pipeline = Method(mod, "FearNoSpear.SpearSafetyTracker", "TrySpawnOriginalItem");
+        Expect(pipeline.Body.Instructions.Any(i => i.Operand is FieldReference f && f.Name == "F_groundHitOnly") &&
+            pipeline.Body.Instructions.Any(i => i.Operand is FieldReference f && f.Name == "_spawnedDrop") &&
+            Calls(pipeline).Where(m => m.Name == "SpawnThroughValheimPath" || m.Name == "TryDropStoredItem")
+                .Select(m => m.Name).SequenceEqual(new[] { "SpawnThroughValheimPath", "TryDropStoredItem" }),
+            "rescue retains the ground-only guard, exact native drop confirmation, and native-first fallback order");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
