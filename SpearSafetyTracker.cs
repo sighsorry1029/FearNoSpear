@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 
@@ -8,14 +7,10 @@ namespace FearNoSpear;
 internal sealed class SpearSafetyTracker : MonoBehaviour
 {
     private const string ZdoRescueClaimKey = "FearNoSpear.Rescued";
-    private const float NearbyDropMatchRadius = 4f;
-    private const float PendingDropTagSeconds = 2f;
-    private const float PendingDropTagRetrySeconds = 0.1f;
-
-    private static readonly List<PendingDropTag> PendingDropTags = new();
-    private static float _nextPendingDropTagScanAt;
-
+    private const float TtlRescueWindowSeconds = 1f;
+    private const float LastKnownOwnerGraceSeconds = 2f;
     private Projectile? _projectile;
+    private ItemDrop? _spawnedDrop;
     private bool _normalHit;
     private bool _rescueAttempted;
     private bool _lastKnownOwner;
@@ -37,36 +32,6 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         return tracker;
     }
 
-    internal static void ClearPendingDropTags()
-    {
-        PendingDropTags.Clear();
-        _nextPendingDropTagScanAt = 0f;
-    }
-
-    internal static void UpdatePendingDropTags()
-    {
-        if (PendingDropTags.Count == 0) return;
-        if (Time.time < _nextPendingDropTagScanAt) return;
-        _nextPendingDropTagScanAt = Time.time + PendingDropTagRetrySeconds;
-        ItemDrop[] loadedDrops = FindObjectsByType<ItemDrop>(FindObjectsSortMode.None);
-
-        for (int i = PendingDropTags.Count - 1; i >= 0; --i)
-        {
-            PendingDropTag pending = PendingDropTags[i];
-            if (Time.time > pending.ExpiresAt)
-            {
-                PendingDropTags.RemoveAt(i);
-                continue;
-            }
-
-            ItemDrop? drop = FindBestMatchingNearbyDrop(pending.SpawnItem, pending.Position, loadedDrops);
-            if (drop == null) continue;
-
-            SpearThrowerMetadata.TryWriteToDrop(drop, pending.ThrowerPlayerId);
-            PendingDropTags.RemoveAt(i);
-        }
-    }
-
     internal void Arm(Projectile projectile)
     {
         _projectile = projectile;
@@ -81,19 +46,21 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
 
     internal void MarkNormalHit()
     {
-        if (_projectile != null)
-        {
-            RefreshState();
-            TryCopyThrowerMetadataToNearbyDrop();
-        }
-
         _normalHit = true;
+    }
+
+    internal void RecordSpawnedDrop(ItemDrop drop)
+    {
+        // Keep the exact native result even if a later callback or metadata write fails.
+        _spawnedDrop = drop;
+        _normalHit = true;
+        long playerId = EnsureThrowerMetadata();
+        if (playerId != 0L) SpearThrowerMetadata.TryWriteToDrop(drop, playerId);
     }
 
     internal bool TryRescue(string reason)
     {
         if (FearNoSpearPlugin.IsShuttingDown) return false;
-        if (!FearNoSpearPlugin.Cfg.Enabled.Value) return false;
         if (_projectile == null || _rescueAttempted) return false;
         if (_normalHit || ReflectionCache.Get(ReflectionCache.F_didHit, _projectile, false)) return false;
         if (!SpearProjectileDetector.IsTrackedSpearProjectile(_projectile)) return false;
@@ -142,13 +109,12 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
 
     internal bool TryTtlRescueAndDestroyIfNeeded()
     {
-        if (!FearNoSpearPlugin.Cfg.Enabled.Value) return false;
         if (_projectile == null) return false;
 
         RefreshState();
 
         float ttl = _lastTtl;
-        float window = Mathf.Max(Time.fixedDeltaTime * 1.5f, FearNoSpearPlugin.Cfg.TtlRescueWindowSeconds.Value);
+        float window = Mathf.Max(Time.fixedDeltaTime * 1.5f, TtlRescueWindowSeconds);
         if (ttl <= 0f || ttl > window) return false;
 
         if (!TryRescue("TTL expiry")) return false;
@@ -211,12 +177,8 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
             return nview.IsOwner();
         }
 
-        float maxAge = Mathf.Max(0f, FearNoSpearPlugin.Cfg.LastKnownOwnerGraceSeconds.Value);
         float age = Time.time - _lastOwnerStateTime;
-        bool allowLastKnown = FearNoSpearPlugin.Cfg.AllowLastKnownOwnerIfZNetViewInvalid.Value &&
-                              _lastKnownOwner &&
-                              age <= maxAge;
-        return allowLastKnown;
+        return _lastKnownOwner && age <= LastKnownOwnerGraceSeconds;
     }
 
     private long EnsureThrowerMetadata()
@@ -237,44 +199,6 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         }
 
         return _throwerPlayerId;
-    }
-
-    private void TryCopyThrowerMetadataToNearbyDrop()
-    {
-        if (_projectile == null) return;
-
-        ItemDrop.ItemData? spawnItem = ReflectionCache.Get<ItemDrop.ItemData?>(ReflectionCache.F_spawnItem, _projectile, null);
-        if (spawnItem == null) return;
-
-        TryCopyThrowerMetadataToNearbyDrop(spawnItem, _lastPosition);
-    }
-
-    private void TryCopyThrowerMetadataToNearbyDrop(ItemDrop.ItemData spawnItem, Vector3 position)
-    {
-        long throwerPlayerId = EnsureThrowerMetadata();
-        if (throwerPlayerId == 0L) return;
-
-        ItemDrop? drop = FindBestMatchingNearbyDrop(spawnItem, position);
-        if (drop == null)
-        {
-            QueuePendingDropTag(spawnItem, position, throwerPlayerId);
-            return;
-        }
-
-        SpearThrowerMetadata.TryWriteToDrop(drop, throwerPlayerId);
-    }
-
-    private static void QueuePendingDropTag(ItemDrop.ItemData spawnItem, Vector3 position, long throwerPlayerId)
-    {
-        if (throwerPlayerId == 0L) return;
-
-        PendingDropTags.Add(new PendingDropTag
-        {
-            SpawnItem = spawnItem,
-            Position = position,
-            ThrowerPlayerId = throwerPlayerId,
-            ExpiresAt = Time.time + PendingDropTagSeconds
-        });
     }
 
     private bool TryClaimNetworkRescue(out NetworkRescueClaim claim)
@@ -316,35 +240,16 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         }
     }
 
-    private static ItemDrop? FindBestMatchingNearbyDrop(ItemDrop.ItemData spawnItem, Vector3 position, ItemDrop[]? loadedDrops = null)
-    {
-        ItemDrop? best = null;
-        float bestDistanceSqr = float.PositiveInfinity;
-        float radiusSqr = NearbyDropMatchRadius * NearbyDropMatchRadius;
-
-        foreach (ItemDrop drop in loadedDrops ?? FindObjectsByType<ItemDrop>(FindObjectsSortMode.None))
-        {
-            if (drop == null || drop.m_itemData == null) continue;
-            float distanceSqr = Vector3.SqrMagnitude(drop.transform.position - position);
-            if (distanceSqr > radiusSqr || distanceSqr >= bestDistanceSqr) continue;
-            if (!SpearItemIdentity.IsEquivalent(spawnItem, drop.m_itemData)) continue;
-            best = drop;
-            bestDistanceSqr = distanceSqr;
-        }
-
-        return best;
-    }
-
     private bool TrySpawnOriginalItem(Projectile projectile, ItemDrop.ItemData spawnItem, Vector3 normal, out ItemDrop drop)
     {
         drop = null!;
         bool spawnOnHitWouldNoOp = ReflectionCache.Get(ReflectionCache.F_groundHitOnly, projectile, false);
-        if (!spawnOnHitWouldNoOp && TrySpawnOriginalItemThroughValheimPath(projectile, normal))
+        if (!spawnOnHitWouldNoOp)
         {
-            ItemDrop? spawnedDrop = FindBestMatchingNearbyDrop(spawnItem, _lastPosition);
-            if (spawnedDrop != null)
+            TrySpawnOriginalItemThroughValheimPath(projectile, normal);
+            if (_spawnedDrop != null)
             {
-                drop = spawnedDrop;
+                drop = _spawnedDrop;
                 return true;
             }
         }
@@ -426,11 +331,4 @@ internal sealed class SpearSafetyTracker : MonoBehaviour
         }
     }
 
-    private sealed class PendingDropTag
-    {
-        internal ItemDrop.ItemData SpawnItem = null!;
-        internal Vector3 Position;
-        internal long ThrowerPlayerId;
-        internal float ExpiresAt;
-    }
 }

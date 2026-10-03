@@ -20,7 +20,7 @@ namespace FearNoSpear
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.9";
+        public const string ModVersion = "1.0.8";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;
@@ -49,12 +49,16 @@ namespace FearNoSpear
             Off = 0
         }
 
+        public enum IndicatorPosition
+        {
+            AboveHead,
+            BehindBack
+        }
+
         public enum IndicatorStyle
         {
-            BeamAndHud,
             Beam,
-            Hud,
-            Off
+            Arrow
         }
 
         private void Awake()
@@ -65,7 +69,7 @@ namespace FearNoSpear
             Config.SaveOnConfigSet = false;
 
             _serverConfigLocked = BindConfig("General", "Lock Configuration", Toggle.On,
-                "Locks OwnerOnlyTombstones to the server's config when the mod is installed on a server. Personal indicator and death-pin settings are not locked. Spear rescue and thrower-only auto-pickup use fixed rules and have no config switches.");
+                "Locks the synchronized gameplay settings to the server's config when the mod is installed on a server. Keep this on for multiplayer servers so every client uses the same spear rescue timing, ownership safety, and tombstone access rules.");
             Sync.AddLockingConfigEntry(_serverConfigLocked);
 
             Cfg = new FearNoSpearConfig(this);
@@ -102,11 +106,10 @@ namespace FearNoSpear
             SpearIndicator.Update();
         }
 
-        internal ConfigEntry<T> BindConfig<T>(string group, string name, T value, string description,
-            bool synchronizedSetting = true, AcceptableValueBase? acceptableValues = null)
+        internal ConfigEntry<T> BindConfig<T>(string group, string name, T value, string description, bool synchronizedSetting = true)
         {
             string syncText = synchronizedSetting ? " [Synced with Server]" : " [Not Synced with Server]";
-            ConfigEntry<T> configEntry = Config.Bind(group, name, value, new ConfigDescription(description + syncText, acceptableValues));
+            ConfigEntry<T> configEntry = Config.Bind(group, name, value, new ConfigDescription(description + syncText));
             SyncedConfigEntry<T> syncedConfigEntry = Sync.AddConfigEntry(configEntry);
             syncedConfigEntry.SynchronizedConfig = synchronizedSetting;
             return configEntry;
@@ -165,29 +168,56 @@ namespace FearNoSpear
 
     internal sealed class FearNoSpearConfig
     {
-        internal const float MinimumInitialTtlSeconds = 60f;
-        internal const int MaxLocationResults = 5;
+        internal readonly ConfigEntry<bool> Enabled;
 
+        internal const float MinimumInitialTtlSeconds = 60f;
+        internal const int MaxPinsPerCommand = 5;
+
+        internal readonly ConfigEntry<float> TtlRescueWindowSeconds;
+        internal readonly ConfigEntry<bool> AllowLastKnownOwnerIfZNetViewInvalid;
+        internal readonly ConfigEntry<float> LastKnownOwnerGraceSeconds;
+        internal readonly ConfigEntry<string> ChatCommand;
         internal readonly ConfigEntry<bool> CleanDeathPins;
         internal readonly ConfigEntry<bool> OwnerOnlyTombstones;
+        internal readonly ConfigEntry<bool> ShowSpearIndicator;
         internal readonly ConfigEntry<FearNoSpearPlugin.IndicatorStyle> SpearIndicatorStyle;
-        internal readonly ConfigEntry<int> MaxDisplayedSpears;
+        internal readonly ConfigEntry<FearNoSpearPlugin.IndicatorPosition> SpearIndicatorPosition;
+        internal readonly ConfigEntry<bool> ThrowerOnlyAutoPickup;
 
         internal FearNoSpearConfig(FearNoSpearPlugin plugin)
         {
-            SpearIndicatorStyle = plugin.BindConfig("General", "SpearIndicatorStyle", FearNoSpearPlugin.IndicatorStyle.BeamAndHud,
-                "BeamAndHud (default): a 500-meter column plus an item icon and distance on the HUD. Beam: column only, subject to world rendering distance and terrain. Hud: icon and distance only, with a screen-edge direction marker for off-screen spears; it remains visible beyond world rendering distance and through terrain. Off: hides indicators and stops this client's automatic location queries without disabling spear protection or other clients' queries. No real lights or forced zone loading are used. This is a personal setting.", synchronizedSetting: false);
+            Enabled = plugin.BindConfig("General", "Enabled", true,
+                "Master switch for all FearNoSpear behavior, including spear protection, direction indicator, chat locator, auto-pickup restriction, death pin cleanup, and tombstone access protection.");
 
-            MaxDisplayedSpears = plugin.BindConfig("General", "MaxDisplayedSpears", 1,
-                "Maximum number of your landed or rescued thrown spears to display, nearest first. Range: 1 to 5; default: 1. Uses one shared location request regardless of this count. Nearby drops are followed as they move; distant server positions refresh every 5 seconds. Use SpearIndicatorStyle = Off to disable the display. This is a personal setting.", synchronizedSetting: false,
-                acceptableValues: new AcceptableValueRange<int>(1, MaxLocationResults));
+            ShowSpearIndicator = plugin.BindConfig("General", "ShowSpearIndicator", true,
+                "Shows a local indicator for your nearest landed or rescued thrown spear, with its item icon and distance. Nearby drops are followed as they move; distant positions are refreshed from the server every 5 seconds. Does not create map pins or open the map. This visual preference is personal and is not locked by ServerSync.", synchronizedSetting: false);
+
+            SpearIndicatorStyle = plugin.BindConfig("General", "SpearIndicatorStyle", FearNoSpearPlugin.IndicatorStyle.Beam,
+                "Beam (default) draws a 500-meter vertical light-like column at the spear and a screen-space icon/distance marker. Off-screen targets get a directional arrow at the screen edge. The HUD remains visible beyond the camera's world rendering distance and through terrain; the beam itself uses normal world rendering. Arrow uses the compact character-relative 3D arrow instead. No real lights, extra server requests, or forced zone loading are used. This is a personal, unsynchronized setting.", synchronizedSetting: false);
+
+            SpearIndicatorPosition = plugin.BindConfig("General", "SpearIndicatorPosition", FearNoSpearPlugin.IndicatorPosition.AboveHead,
+                "Only used when SpearIndicatorStyle is Arrow. AboveHead places the arrow, icon, and distance above your character's head (default). BehindBack places them behind your upper body, relative to the direction your character faces, not the camera. The arrow still points toward the spear in either position. This visual preference is personal and is not locked by ServerSync.", synchronizedSetting: false);
+
+            ThrowerOnlyAutoPickup = plugin.BindConfig("General", "ThrowerOnlyAutoPickup", true,
+                "Only the player who threw a tagged spear can automatically attract and pick it up. Other players can still pick it up manually. Ordinary inventory drops and spears without thrower metadata retain vanilla auto-pickup rules. Synchronized gameplay rule for modded clients, not an anti-cheat restriction.");
+
+            ChatCommand = plugin.BindConfig("General", "ChatCommand", "!myspear",
+                "Chat command used to pin known thrown spear locations on the minimap, nearest first. The comparison is case-insensitive and the command is consumed locally instead of being sent to public chat. Server operators can change this value, such as !spear or !lostspear, and lock it through ServerSync. Leave it empty to disable the chat command.");
 
             CleanDeathPins = plugin.BindConfig("General", "CleanDeathPins", true,
-                "Removes your vanilla death map pin when your tombstone is recovered, and removes the pin after a short grace period when a death creates no tombstone. Affects your own map only. This personal preference is not synchronized or locked by the server.", synchronizedSetting: false);
+                "Removes the vanilla death map pin when the local player's tombstone is recovered, and suppresses the death pin when a death creates no tombstone. This setting is synchronized so server operators can keep the same behavior for all clients.");
 
             OwnerOnlyTombstones = plugin.BindConfig("General", "OwnerOnlyTombstones", true,
-                "Prevents players from opening or auto-looting a tombstone owned by another player. A server administrator or the local host can bypass this mod's owner restriction while debug mode is active, including on a dedicated server. This does not enable debug mode or override other mods' locks, inventory capacity, or containers already in use. When the optional Clan mod is installed, members of the local player's active Clan roster, including Guests, may also recover it. Tombstones without a valid owner ID remain accessible. This setting is synchronized and enabled by default.");
+                "Prevents players from opening or auto-looting a tombstone owned by another player. A server administrator or the local host can bypass the lock only while Valheim devcommands and debug mode are active. When the optional Clan mod is installed, members of the local player's active Clan roster, including Guests, may also recover it. Tombstones without a valid owner ID remain accessible so malformed or uninitialized tombstones are not permanently locked. This setting is synchronized and enabled by default.");
 
+            TtlRescueWindowSeconds = plugin.BindConfig("Rescue", "TTLRescueWindowSeconds", 1f,
+                "How close to projectile TTL expiry the mod should rescue a still-airborne tracked spear. A value of 1.0 means the stored spear item is respawned during the final second of projectile lifetime if no normal hit occurred. Increase this if projectiles are still being cleaned up before rescue; decrease it if rescued spears feel like they stop flying too early.");
+
+            AllowLastKnownOwnerIfZNetViewInvalid = plugin.BindConfig("Rescue", "AllowLastKnownOwnerIfZNetViewInvalid", true,
+                "Allows a rescue attempt when the projectile ZNetView has already become invalid, but only if this client was the most recent known owner. This helps recover spears lost during unload, ownership disruption, or network cleanup. Disable it if multiplayer testing shows duplicate rescued spears.");
+
+            LastKnownOwnerGraceSeconds = plugin.BindConfig("Rescue", "LastKnownOwnerGraceSeconds", 2f,
+                "Maximum age, in seconds, for the last-known owner state used by the invalid-ZNetView fallback. Lower values reduce duplicate-spawn risk but may miss late cleanup cases; higher values are more forgiving but less conservative in multiplayer.");
         }
 
     }
@@ -202,6 +232,7 @@ namespace FearNoSpear
         internal static FieldInfo? F_spawnItem;
         internal static FieldInfo? F_respawnItemOnHit;
         internal static FieldInfo? F_groundHitOnly;
+        internal static FieldInfo? F_terminalInput;
         internal static FieldInfo? F_projectileOwner;
         internal static FieldInfo? F_characterNView;
         internal static FieldInfo? F_tombstoneContainer;
@@ -220,6 +251,7 @@ namespace FearNoSpear
             F_spawnItem = AccessTools.Field(typeof(Projectile), "m_spawnItem");
             F_respawnItemOnHit = AccessTools.Field(typeof(Projectile), "m_respawnItemOnHit");
             F_groundHitOnly = AccessTools.Field(typeof(Projectile), "m_groundHitOnly");
+            F_terminalInput = AccessTools.Field(typeof(Terminal), "m_input");
             F_projectileOwner = AccessTools.Field(typeof(Projectile), "m_owner");
             F_characterNView = AccessTools.Field(typeof(Character), "m_nview");
             F_tombstoneContainer = AccessTools.Field(typeof(TombStone), "m_container");
@@ -243,6 +275,7 @@ namespace FearNoSpear
             WarnMissing(log, nameof(F_spawnItem), F_spawnItem);
             WarnMissing(log, nameof(F_respawnItemOnHit), F_respawnItemOnHit);
             WarnMissing(log, nameof(F_groundHitOnly), F_groundHitOnly);
+            WarnMissing(log, nameof(F_terminalInput), F_terminalInput);
             WarnMissing(log, nameof(F_projectileOwner), F_projectileOwner);
             WarnMissing(log, nameof(F_characterNView), F_characterNView);
             WarnMissing(log, nameof(F_tombstoneContainer), F_tombstoneContainer);
@@ -378,6 +411,7 @@ namespace FearNoSpear
     {
         private static void Postfix(Projectile __instance)
         {
+            if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
             SpearSafetyTracker.GetOrArmIfTracked(__instance);
         }
     }
@@ -387,6 +421,7 @@ namespace FearNoSpear
     {
         private static bool Prefix(Projectile __instance)
         {
+            if (!FearNoSpearPlugin.Cfg.Enabled.Value) return true;
             SpearSafetyTracker? tracker = __instance.GetComponent<SpearSafetyTracker>() ??
                                           SpearSafetyTracker.GetOrArmIfTracked(__instance);
             if (tracker == null) return true;
@@ -396,12 +431,22 @@ namespace FearNoSpear
         }
     }
 
+    [HarmonyPatch(typeof(Chat), "SendInput")]
+    internal static class ChatSendInputPatch
+    {
+        private static bool Prefix(Chat __instance)
+        {
+            return !SpearChatCommand.TryConsume(__instance);
+        }
+    }
+
     [HarmonyPatch(typeof(Humanoid), "Pickup", new[] { typeof(GameObject), typeof(bool), typeof(bool) })]
     internal static class HumanoidPickupPatch
     {
         private static void Prefix(Humanoid __instance, GameObject go, out string? __state)
         {
             __state = null;
+            if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
             if (Player.m_localPlayer == null || __instance != Player.m_localPlayer) return;
             if (go == null) return;
 
@@ -488,6 +533,7 @@ namespace FearNoSpear
 
         private static void Prefix(GameObject __0)
         {
+            if (!FearNoSpearPlugin.Cfg.Enabled.Value) return;
             if (__0 == null) return;
 
             SpearSafetyTracker? tracker = __0.GetComponent<SpearSafetyTracker>();

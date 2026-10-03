@@ -6,70 +6,48 @@ namespace FearNoSpear;
 
 internal static class SpearServerRegistry
 {
-    private static List<string>? _spearItemDropPrefabNames;
+    private static List<ZDOID> _taggedIds = new();
+    private static float _nextScanAt;
 
     internal static void Clear()
     {
-        _spearItemDropPrefabNames = null;
+        _taggedIds.Clear();
+        _nextScanAt = 0f;
     }
 
     internal static List<SpearLocationRecord> SelectBest(long playerId, Vector3 referencePosition)
     {
-        if (playerId == 0L) return new List<SpearLocationRecord>();
-        return SelectWorldZdoSpearDrops(playerId, referencePosition);
-    }
-
-    private static List<SpearLocationRecord> SelectWorldZdoSpearDrops(long playerId, Vector3 referencePosition)
-    {
-        if (ZNet.instance == null || !ZNet.instance.IsServer()) return new List<SpearLocationRecord>();
-        if (ZDOMan.instance == null || ZNetScene.instance == null) return new List<SpearLocationRecord>();
-
         List<SpearLocationRecord> records = new();
-        foreach (string prefabName in GetSpearItemDropPrefabNames())
+        if (playerId == 0L || ZNet.instance == null || !ZNet.instance.IsServer()) return records;
+        if (ZDOMan.instance == null || ZNetScene.instance == null) return records;
+
+        // Share one bounded-rate tag scan across clients, not a world scan per spear prefab.
+        if (Time.unscaledTime >= _nextScanAt)
         {
-            List<ZDO> zdos = new();
-            int index = 0;
-            while (!ZDOMan.instance.GetAllZDOsWithPrefabIterative(prefabName, zdos, ref index))
-            {
-            }
-
-            foreach (ZDO zdo in zdos)
-            {
-                if (zdo == null || !zdo.IsValid()) continue;
-                if (SpearThrowerMetadata.ReadFromZdo(zdo) != playerId) continue;
-
-                records.Add(new SpearLocationRecord
-                {
-                    Key = SpearItemIdentity.BuildWorldDropRecordKey(zdo.m_uid),
-                    Position = zdo.GetPosition()
-                });
-            }
+            _taggedIds = ZDOExtraData.GetAllZDOIDsWithHash(ZDOExtraData.Type.Long, SpearThrowerMetadata.ThrowerPlayerIdHash);
+            _nextScanAt = Time.unscaledTime + 2f;
         }
 
-        return records
-            .OrderBy(record => Vector3.SqrMagnitude(record.Position - referencePosition))
-            .Take(FearNoSpearConfig.MaxPinsPerCommand)
-            .ToList();
-    }
-
-    private static List<string> GetSpearItemDropPrefabNames()
-    {
-        if (_spearItemDropPrefabNames != null) return _spearItemDropPrefabNames;
-
-        _spearItemDropPrefabNames = new List<string>();
-        if (ZNetScene.instance == null) return _spearItemDropPrefabNames;
-
-        foreach (string prefabName in ZNetScene.instance.GetPrefabNames())
+        foreach (ZDOID id in _taggedIds)
         {
-            GameObject? prefab = ZNetScene.instance.GetPrefab(prefabName);
+            ZDO? zdo = ZDOMan.instance.GetZDO(id);
+            if (SpearThrowerMetadata.ReadFromZdo(zdo) != playerId) continue;
+            GameObject? prefab = ZNetScene.instance.GetPrefab(zdo!.GetPrefab());
             ItemDrop? drop = prefab != null ? prefab.GetComponent<ItemDrop>() : null;
-            if (drop == null || drop.m_itemData == null) continue;
-            if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) continue;
+            if (drop == null || !SpearProjectileDetector.IsSpearItem(drop.m_itemData)) continue;
 
-            _spearItemDropPrefabNames.Add(prefabName);
+            records.Add(new SpearLocationRecord
+            {
+                Key = SpearItemIdentity.BuildWorldDropRecordKey(id),
+                Position = zdo.GetPosition(),
+                PrefabHash = zdo.GetPrefab(),
+                Variant = zdo.GetInt(ZDOVars.s_variant, 0)
+            });
         }
 
-        return _spearItemDropPrefabNames;
+        return records.OrderBy(record => (record.Position - referencePosition).sqrMagnitude)
+            .ThenBy(record => record.Key, System.StringComparer.Ordinal)
+            .Take(FearNoSpearConfig.MaxLocationResults).ToList();
     }
 
 }

@@ -5,11 +5,13 @@
 The main risk is duplicate spear creation in multiplayer. The mod mitigates this with:
 
 - owner-only rescue,
-- `AllowLastKnownOwnerIfZNetViewInvalid`,
+- a fixed 2-second freshness limit on last-confirmed ownership for invalid-view rescue,
 - a ZDO rescue claim flag,
 - one rescue attempt per local tracker.
 
 The mod does not delete nearby equivalent drops as duplicate cleanup because item-data equivalence is not a unique throw identity.
+
+Invalid-view rescue is always enabled for a sufficiently recent last-confirmed owner. This prioritizes loss prevention; if the view is invalid, the shared ZDO claim may be unavailable. The freshness limit does not guarantee that simultaneous rescues cannot occur. Rescue timing is fixed at 1 second before TTL expiry, retaining the physics-step margin; there are no rescue config switches. A reproducible duplicate issue requires investigating ownership and spawn paths rather than changing config.
 
 These must be tested on a dedicated server.
 

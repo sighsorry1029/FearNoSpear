@@ -108,8 +108,7 @@ internal static class DeathPinCleaner
 
     private static bool IsEnabled()
     {
-        return FearNoSpearPlugin.Cfg.Enabled.Value &&
-               FearNoSpearPlugin.Cfg.CleanDeathPins.Value;
+        return FearNoSpearPlugin.Cfg.CleanDeathPins.Value;
     }
 
     private static bool IsLocalTombstone(TombStone tombstone)
@@ -205,8 +204,7 @@ internal static class TombStoneOwnerOnlyInteractPatch
 {
     private static bool Prefix(TombStone __instance, Humanoid __0, bool __1, ref bool __result)
     {
-        if (!FearNoSpearPlugin.Cfg.Enabled.Value ||
-            !FearNoSpearPlugin.Cfg.OwnerOnlyTombstones.Value)
+        if (!FearNoSpearPlugin.Cfg.OwnerOnlyTombstones.Value)
         {
             return true;
         }
@@ -239,8 +237,6 @@ internal static class TombStoneOwnerOnlyInteractPatch
     {
         return player == Player.m_localPlayer &&
                Player.m_debugMode &&
-               Console.instance != null &&
-               Console.instance.IsCheatsEnabled() &&
                ZNet.instance != null &&
                ZNet.instance.LocalPlayerIsAdminOrHost();
     }

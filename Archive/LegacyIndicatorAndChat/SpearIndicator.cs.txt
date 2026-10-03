@@ -1,0 +1,351 @@
+using TMPro;
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.UI;
+
+namespace FearNoSpear;
+
+internal static class SpearIndicator
+{
+    private const float ArrowScale = 0.5f;
+    private const float ArrowLength = 1.08f * ArrowScale;
+    private const float BeamHeight = 500f;
+
+    private static GameObject? _root;
+    private static Transform? _arrow;
+    private static LineRenderer? _beam;
+    private static Canvas? _canvas;
+    private static RectTransform? _label;
+    private static RectTransform? _edgePointer;
+    private static Image? _icon;
+    private static TextMeshProUGUI? _distance;
+    private static Mesh? _mesh;
+    private static Material? _material;
+    private static float _retryAt;
+    private static float _nextTextAt;
+    private static Vector3 _beamPosition;
+    private static float _beamWidth;
+    private static bool _beamPositionSet;
+
+    internal static void Clear()
+    {
+        if (_root != null) Object.Destroy(_root);
+        if (_canvas != null) Object.Destroy(_canvas.gameObject);
+        if (_mesh != null) Object.Destroy(_mesh);
+        if (_material != null) Object.Destroy(_material);
+        _root = null;
+        _arrow = null;
+        _beam = null;
+        _canvas = null;
+        _label = null;
+        _edgePointer = null;
+        _icon = null;
+        _distance = null;
+        _mesh = null;
+        _material = null;
+        _beamPositionSet = false;
+        _beamWidth = 0f;
+        _retryAt = _nextTextAt = 0f;
+    }
+
+    private static void Hide()
+    {
+        if (_root != null) _root.SetActive(false);
+        if (_canvas != null) _canvas.gameObject.SetActive(false);
+    }
+
+    internal static void Update()
+    {
+        Player player = Player.m_localPlayer;
+        if (player == null)
+        {
+            if (_root != null || _canvas != null || _mesh != null || _material != null) Clear();
+            return;
+        }
+        Camera camera = Utils.GetMainCamera();
+        if (FearNoSpearPlugin.IsShuttingDown || !FearNoSpearPlugin.Cfg.Enabled.Value ||
+            !FearNoSpearPlugin.Cfg.ShowSpearIndicator.Value || camera == null || camera.pixelHeight <= 0 ||
+            Hud.instance == null || !Hud.instance.IsVisible() || Hud.IsUserHidden() ||
+            player.IsDead() || player.IsTeleporting() || player.IsSleeping() ||
+            Minimap.IsOpen() || InventoryGui.IsVisible() || Menu.IsVisible() ||
+            !SpearLocator.TryGetNearest(player, out Vector3 target, out Sprite? icon))
+        {
+            Hide();
+            return;
+        }
+
+        if ((_root == null || _canvas == null) && !Create()) return;
+        float distance = Vector3.Distance(player.transform.position, target);
+        bool visible = FearNoSpearPlugin.Cfg.SpearIndicatorStyle.Value == FearNoSpearPlugin.IndicatorStyle.Arrow
+            ? UpdateArrow(player, camera, target)
+            : UpdateBeam(camera, target, distance);
+        if (!visible)
+        {
+            Hide();
+            return;
+        }
+
+        _root!.SetActive(true);
+        _canvas!.gameObject.SetActive(true);
+        _icon!.sprite = icon;
+        _icon.enabled = icon != null;
+        if (Time.unscaledTime >= _nextTextAt)
+        {
+            _distance!.text = distance < 1000f ? $"{distance:0} m" : $"{distance / 1000f:0.0} km";
+            _nextTextAt = Time.unscaledTime + 0.1f;
+        }
+    }
+
+    private static bool UpdateBeam(Camera camera, Vector3 target, float distance)
+    {
+        _arrow!.gameObject.SetActive(false);
+        _beam!.gameObject.SetActive(true);
+        if (!_beamPositionSet || (target - _beamPosition).sqrMagnitude > 0.000001f)
+        {
+            _beamPositionSet = true;
+            _beamPosition = target;
+            _beam.SetPosition(0, target);
+            _beam.SetPosition(1, target + Vector3.up * BeamHeight);
+        }
+        float width = GetBeamWidth(distance);
+        if (Mathf.Abs(width - _beamWidth) > 0.01f)
+        {
+            _beamWidth = width;
+            _beam.startWidth = _beam.endWidth = width;
+        }
+
+        SetCanvasMode(RenderMode.ScreenSpaceOverlay);
+        Rect viewport = camera.pixelRect;
+        Rect safeArea = Screen.safeArea;
+        Rect safeViewport = Rect.MinMaxRect(
+            Mathf.Max(viewport.xMin, safeArea.xMin), Mathf.Max(viewport.yMin, safeArea.yMin),
+            Mathf.Min(viewport.xMax, safeArea.xMax), Mathf.Min(viewport.yMax, safeArea.yMax));
+        if (safeViewport.width <= 0f || safeViewport.height <= 0f) safeViewport = viewport;
+
+        // Overlay placement deliberately has no far-clip or terrain-visibility test.
+        Vector3 viewPosition = camera.transform.InverseTransformPoint(target);
+        Vector3 projected = viewPosition.z > 0f ? camera.WorldToViewportPoint(target) : new Vector3(0.5f, 0.5f, viewPosition.z);
+        bool edge = GetHudPlacement(projected, new Vector2(viewPosition.x, viewPosition.y), viewport, safeViewport,
+            out Vector2 screenPosition, out Vector2 direction);
+        _label!.anchoredPosition = screenPosition - new Vector2(Screen.width, Screen.height) * 0.5f;
+        _label.localRotation = Quaternion.identity;
+        _label.localScale = Vector3.one * GetHudScale(safeViewport);
+        _edgePointer!.gameObject.SetActive(edge);
+        if (edge) _edgePointer.localRotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f);
+        return true;
+    }
+
+    private static bool UpdateArrow(Player player, Camera camera, Vector3 target)
+    {
+        _beam!.gameObject.SetActive(false);
+        _arrow!.gameObject.SetActive(true);
+        _edgePointer!.gameObject.SetActive(false);
+        Vector3 origin = GetAnchor(player.GetHeadPoint(), player.transform.forward, FearNoSpearPlugin.Cfg.SpearIndicatorPosition.Value);
+        Vector3 direction = target - origin;
+        if (direction.sqrMagnitude < 0.01f) direction = player.transform.forward;
+        direction.Normalize();
+        Vector3 labelPosition = origin + camera.transform.up * 0.4f;
+        float depth = camera.WorldToViewportPoint(labelPosition).z;
+        if (depth <= camera.nearClipPlane) return false;
+
+        // Center the arrow on its anchor even when it points down or toward the body.
+        _arrow.position = origin - direction * (ArrowLength * 0.5f);
+        Vector3 up = Mathf.Abs(Vector3.Dot(direction, Vector3.up)) > 0.98f ? player.transform.forward : Vector3.up;
+        _arrow.rotation = Quaternion.LookRotation(direction, up);
+        SetCanvasMode(RenderMode.WorldSpace);
+        _canvas!.worldCamera = camera;
+        Transform canvasTransform = _canvas.transform;
+        canvasTransform.position = labelPosition;
+        canvasTransform.rotation = camera.transform.rotation;
+        float worldPerPixel = camera.orthographic ? 2f * camera.orthographicSize / camera.pixelHeight
+            : 2f * depth * Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad * 0.5f) / camera.pixelHeight;
+        canvasTransform.localScale = Vector3.one * worldPerPixel;
+        _label!.anchoredPosition = Vector2.zero;
+        _label.localRotation = Quaternion.identity;
+        _label.localScale = Vector3.one;
+        return true;
+    }
+
+    private static void SetCanvasMode(RenderMode mode)
+    {
+        if (_canvas!.renderMode == mode) return;
+        _canvas.renderMode = mode;
+        _canvas.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+        _canvas.transform.localScale = Vector3.one;
+        if (mode == RenderMode.WorldSpace)
+            ((RectTransform)_canvas.transform).sizeDelta = new Vector2(152f, 44f);
+    }
+
+    private static float GetBeamWidth(float distance)
+    {
+        return Mathf.Clamp(distance * 0.002f, 0.3f, 2f) * 0.7f;
+    }
+
+    private static float GetHudScale(Rect safeViewport)
+    {
+        return Mathf.Min(1f, Mathf.Min(safeViewport.width / 320f, safeViewport.height / 200f));
+    }
+
+    private static bool GetHudPlacement(Vector3 projected, Vector2 behindDirection, Rect viewport, Rect safeViewport, out Vector2 position, out Vector2 direction)
+    {
+        float scale = GetHudScale(safeViewport);
+        Vector2 halfSize = new(safeViewport.width * 0.5f - 100f * scale, safeViewport.height * 0.5f - 68f * scale);
+        Vector2 center = safeViewport.center;
+        Vector2 offset = new((projected.x - 0.5f) * viewport.width, (projected.y - 0.5f) * viewport.height);
+        bool behind = projected.z <= 0f;
+        bool edge = behind || projected.x < 0f || projected.x > 1f || projected.y < 0f || projected.y > 1f;
+        if (!edge)
+        {
+            Vector2 point = viewport.center + offset + Vector2.up * (32f * scale);
+            position = new Vector2(Mathf.Clamp(point.x, center.x - halfSize.x, center.x + halfSize.x),
+                Mathf.Clamp(point.y, center.y - halfSize.y, center.y + halfSize.y));
+            direction = Vector2.zero;
+            return false;
+        }
+
+        // Use camera-local XY behind the camera: perspective projection would mirror it.
+        // This also handles targets exactly on the camera plane without dividing by zero.
+        if (behind) offset = behindDirection;
+        direction = offset.sqrMagnitude < 0.0001f ? Vector2.down : offset.normalized;
+        float x = Mathf.Abs(direction.x) > 0.0001f ? halfSize.x / Mathf.Abs(direction.x) : float.PositiveInfinity;
+        float y = Mathf.Abs(direction.y) > 0.0001f ? halfSize.y / Mathf.Abs(direction.y) : float.PositiveInfinity;
+        position = center + direction * Mathf.Min(x, y);
+        return true;
+    }
+
+    private static Vector3 GetAnchor(Vector3 headPosition, Vector3 playerForward, FearNoSpearPlugin.IndicatorPosition position)
+    {
+        return position == FearNoSpearPlugin.IndicatorPosition.BehindBack
+            ? headPosition - Vector3.up * 0.25f - playerForward * 1.1f
+            : headPosition + Vector3.up * 0.7f;
+    }
+
+    private static bool Create()
+    {
+        if (Time.unscaledTime < _retryAt) return false;
+        Clear();
+        _retryAt = Time.unscaledTime + 5f;
+        Shader shader = Shader.Find("Sprites/Default") ?? Shader.Find("UI/Default");
+        TMP_FontAsset font = Hud.instance.m_healthText != null ? Hud.instance.m_healthText.font : null!;
+        if (shader == null || font == null) return false;
+
+        _root = new GameObject("FearNoSpear Indicator");
+        _root.SetActive(false);
+        _material = new Material(shader) { color = new Color(1f, 0.85f, 0.3f, 0.95f) };
+        GameObject arrow = new("Direction", typeof(MeshFilter), typeof(MeshRenderer));
+        arrow.transform.SetParent(_root.transform, false);
+        _arrow = arrow.transform;
+        _arrow.localScale = Vector3.one * ArrowScale;
+        _mesh = CreateArrowMesh();
+        arrow.GetComponent<MeshFilter>().sharedMesh = _mesh;
+        ConfigureRenderer(arrow.GetComponent<MeshRenderer>());
+
+        GameObject beam = new("Spear Beam", typeof(LineRenderer));
+        beam.transform.SetParent(_root.transform, false);
+        _beam = beam.GetComponent<LineRenderer>();
+        ConfigureRenderer(_beam);
+        _beam.useWorldSpace = true;
+        _beam.positionCount = 2;
+        _beam.alignment = LineAlignment.View;
+        _beam.textureMode = LineTextureMode.Stretch;
+        _beam.numCapVertices = _beam.numCornerVertices = 0;
+        _beam.startColor = Color.white;
+        _beam.endColor = new Color(1f, 1f, 1f, 0.15f);
+
+        GameObject canvasObject = new("FearNoSpear Indicator UI", typeof(RectTransform), typeof(Canvas));
+        canvasObject.SetActive(false);
+        _canvas = canvasObject.GetComponent<Canvas>();
+        _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        _canvas.sortingOrder = 50;
+        GameObject label = new("Spear", typeof(RectTransform));
+        label.transform.SetParent(canvasObject.transform, false);
+        _label = label.GetComponent<RectTransform>();
+        _label.anchorMin = _label.anchorMax = _label.pivot = new Vector2(0.5f, 0.5f);
+        _label.sizeDelta = new Vector2(152f, 44f);
+
+        GameObject pointer = new("Edge direction", typeof(RectTransform), typeof(CanvasRenderer), typeof(SpearEdgeArrow));
+        pointer.transform.SetParent(_label, false);
+        pointer.GetComponent<SpearEdgeArrow>().raycastTarget = false;
+        _edgePointer = pointer.GetComponent<RectTransform>();
+        _edgePointer.sizeDelta = new Vector2(24f, 28f);
+        _edgePointer.anchoredPosition = new Vector2(0f, 42f);
+
+        GameObject image = new("Icon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        image.transform.SetParent(_label, false);
+        _icon = image.GetComponent<Image>();
+        _icon.raycastTarget = false;
+        _icon.preserveAspect = true;
+        _icon.rectTransform.sizeDelta = new Vector2(40f, 40f);
+        _icon.rectTransform.anchoredPosition = new Vector2(-54f, 0f);
+
+        GameObject text = new("Distance", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+        text.transform.SetParent(_label, false);
+        _distance = text.GetComponent<TextMeshProUGUI>();
+        _distance.font = font;
+        _distance.fontSize = 23f;
+        _distance.alignment = TextAlignmentOptions.MidlineLeft;
+        _distance.color = Color.white;
+        _distance.outlineWidth = 0.25f;
+        _distance.outlineColor = Color.black;
+        _distance.raycastTarget = false;
+        _distance.textWrappingMode = TextWrappingModes.NoWrap;
+        _distance.rectTransform.sizeDelta = new Vector2(108f, 44f);
+        _distance.rectTransform.anchoredPosition = new Vector2(24f, 0f);
+        _nextTextAt = 0f;
+        return true;
+    }
+
+    private static void ConfigureRenderer(Renderer renderer)
+    {
+        renderer.sharedMaterial = _material;
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        renderer.lightProbeUsage = LightProbeUsage.Off;
+        renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+    }
+
+    private static Mesh CreateArrowMesh()
+    {
+        // A short square shaft and pyramid head; no collider or network object is created.
+        Mesh mesh = new() { name = "FearNoSpear Arrow" };
+        mesh.vertices = new[]
+        {
+            new Vector3(-0.045f, -0.045f, 0f), new Vector3(0.045f, -0.045f, 0f),
+            new Vector3(0.045f, 0.045f, 0f), new Vector3(-0.045f, 0.045f, 0f),
+            new Vector3(-0.045f, -0.045f, 0.6f), new Vector3(0.045f, -0.045f, 0.6f),
+            new Vector3(0.045f, 0.045f, 0.6f), new Vector3(-0.045f, 0.045f, 0.6f),
+            new Vector3(-0.18f, -0.18f, 0.58f), new Vector3(0.18f, -0.18f, 0.58f),
+            new Vector3(0.18f, 0.18f, 0.58f), new Vector3(-0.18f, 0.18f, 0.58f),
+            new Vector3(0f, 0f, 1.08f)
+        };
+        mesh.triangles = new[]
+        {
+            0, 2, 1, 0, 3, 2, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5,
+            2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7, 4, 5, 6, 4, 6, 7,
+            8, 10, 9, 8, 11, 10, 8, 9, 12, 9, 10, 12, 10, 11, 12, 11, 8, 12
+        };
+        Color[] colors = new Color[mesh.vertexCount];
+        for (int i = 0; i < colors.Length; ++i) colors[i] = Color.white;
+        mesh.colors = colors;
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+}
+
+internal sealed class SpearEdgeArrow : MaskableGraphic
+{
+    protected override void OnPopulateMesh(VertexHelper vertices)
+    {
+        vertices.Clear();
+        vertices.AddVert(new Vector3(0f, 14f), Color.black, Vector2.zero);
+        vertices.AddVert(new Vector3(-11f, -11f), Color.black, Vector2.zero);
+        vertices.AddVert(new Vector3(11f, -11f), Color.black, Vector2.zero);
+        vertices.AddTriangle(0, 1, 2);
+        Color gold = new(1f, 0.85f, 0.3f, 1f);
+        vertices.AddVert(new Vector3(0f, 10f), gold, Vector2.zero);
+        vertices.AddVert(new Vector3(-7f, -8f), gold, Vector2.zero);
+        vertices.AddVert(new Vector3(7f, -8f), gold, Vector2.zero);
+        vertices.AddTriangle(3, 4, 5);
+    }
+}

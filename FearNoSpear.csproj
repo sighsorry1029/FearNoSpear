@@ -105,6 +105,9 @@
         <Reference Include="UnityEngine.UI">
             <HintPath>$(CorlibPath)\UnityEngine.UI.dll</HintPath>
         </Reference>
+        <Reference Include="UnityEngine.UIModule">
+            <HintPath>$(CorlibPath)\UnityEngine.UIModule.dll</HintPath>
+        </Reference>
         <Reference Include="Unity.TextMeshPro">
             <HintPath>$(GamePath)\valheim_Data\Managed\Unity.TextMeshPro.dll</HintPath>
         </Reference>
@@ -113,11 +116,10 @@
         <Compile Include="Plugin.cs"/>
         <Compile Include="Properties\AssemblyInfo.cs"/>
         <Compile Include="DeathPinCleaner.cs"/>
-        <Compile Include="SpearChatCommand.cs"/>
         <Compile Include="SpearItemIdentity.cs"/>
         <Compile Include="SpearLocator.cs"/>
+        <Compile Include="SpearIndicator.cs"/>
         <Compile Include="SpearNetwork.cs"/>
-        <Compile Include="SpearPinManager.cs"/>
         <Compile Include="SpearServerRegistry.cs"/>
         <Compile Include="SpearSafetyTracker.cs"/>
         <Compile Include="SpearThrowerMetadata.cs"/>
@@ -140,6 +142,7 @@
     </ItemGroup>
     <ItemGroup>
         <None Include="App.config"/>
+        <None Include="Archive\LegacyIndicatorAndChat\*"/>
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.44.1">

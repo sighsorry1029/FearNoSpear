@@ -1,0 +1,214 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using HarmonyLib;
+using UnityEngine;
+
+namespace FearNoSpear;
+
+internal static class SpearLocator
+{
+    private const float PollSeconds = 5f;
+    private const float RequestTimeoutSeconds = 2f;
+    private static readonly FieldInfo? DropInstances = AccessTools.Field(typeof(ItemDrop), "s_instances");
+    private static readonly Dictionary<string, ItemDrop> LoadedDrops = new();
+    private static readonly Dictionary<string, float> PickedUpUntil = new();
+    private static readonly List<SpearLocationRecord> ServerRecords = new();
+    private static long _playerId;
+    private static int _sequence;
+    private static int _pendingRequest;
+    private static bool _pinResponse;
+    private static float _deadline;
+    private static float _nextPoll;
+    private static float _nextLoadedScan;
+    private static float _serverRecordsExpire;
+
+    internal static void Clear()
+    {
+        LoadedDrops.Clear();
+        PickedUpUntil.Clear();
+        ServerRecords.Clear();
+        _playerId = 0L;
+        _pendingRequest = 0;
+        _pinResponse = false;
+        _nextPoll = _nextLoadedScan = _serverRecordsExpire = 0f;
+        // Do not reuse request IDs when reconnecting to the same server.
+        SpearPinManager.Clear();
+    }
+
+    internal static void Update()
+    {
+        Player player = Player.m_localPlayer;
+        if (player == null || player.GetPlayerID() == 0L || !FearNoSpearPlugin.Cfg.Enabled.Value)
+        {
+            if (_playerId != 0L) Clear();
+            return;
+        }
+        if (_playerId != player.GetPlayerID())
+        {
+            Clear();
+            _playerId = player.GetPlayerID();
+        }
+
+        float now = Time.unscaledTime;
+        if (_pendingRequest != 0 && now >= _deadline)
+        {
+            bool pin = _pinResponse;
+            _pendingRequest = 0;
+            _pinResponse = false;
+            _nextPoll = now + 15f;
+            if (pin) PinRecords(GetRecords(player), "No response from server and no local spear drop location found.");
+        }
+        if (now > _serverRecordsExpire) ServerRecords.Clear();
+
+        if (!FearNoSpearPlugin.Cfg.ShowSpearIndicator.Value) return;
+        RefreshLoadedDrops(player);
+        if (_pendingRequest == 0 && now >= _nextPoll) Request(player, pin: false);
+    }
+
+    internal static void PinKnownSpear()
+    {
+        if (!FearNoSpearPlugin.Cfg.Enabled.Value)
+        {
+            ShowMessage("FearNoSpear is disabled.");
+            return;
+        }
+        Player player = Player.m_localPlayer;
+        if (player == null || player.GetPlayerID() == 0L) return;
+        Update();
+        RefreshLoadedDrops(player, force: true);
+        if (_pendingRequest != 0)
+        {
+            _pinResponse = true;
+            ShowMessage("Requesting spear location from server...");
+            return;
+        }
+        Request(player, pin: true);
+    }
+
+    private static void Request(Player player, bool pin)
+    {
+        _pendingRequest = ++_sequence;
+        if (_pendingRequest == 0) _pendingRequest = ++_sequence;
+        _pinResponse = pin;
+        _deadline = Time.unscaledTime + RequestTimeoutSeconds;
+        _nextPoll = Time.unscaledTime + PollSeconds;
+        // Register state before invoking RPC: a local host can respond synchronously.
+        if (pin) ShowMessage("Requesting spear location from server...");
+        if (SpearNetwork.RequestServerSpearLocation(player, _pendingRequest)) return;
+        _pendingRequest = 0;
+        _pinResponse = false;
+        _nextPoll = Time.unscaledTime + 15f;
+        if (pin) PinRecords(GetRecords(player), "No spear drop location found.");
+    }
+
+    internal static void ReceiveServerRecords(int requestId, List<SpearLocationRecord> records)
+    {
+        if (requestId != _pendingRequest || _pendingRequest == 0) return;
+        Player player = Player.m_localPlayer;
+        bool pin = _pinResponse;
+        _pendingRequest = 0;
+        _pinResponse = false;
+        if (player == null || player.GetPlayerID() != _playerId || !FearNoSpearPlugin.Cfg.Enabled.Value) return;
+
+        ServerRecords.Clear();
+        ServerRecords.AddRange(records);
+        _serverRecordsExpire = Time.unscaledTime + PollSeconds * 2f;
+        RefreshLoadedDrops(player, force: true);
+        if (pin) PinRecords(GetRecords(player), "No spear drop location found on server or client.");
+    }
+
+    internal static void MarkSpearPickedUp(string recordKey)
+    {
+        if (string.IsNullOrEmpty(recordKey)) return;
+        LoadedDrops.Remove(recordKey);
+        ServerRecords.RemoveAll(record => record.Key == recordKey);
+        PickedUpUntil[recordKey] = Time.unscaledTime + PollSeconds * 2f;
+        SpearPinManager.RemoveForPickedSpear(recordKey);
+    }
+
+    private static void RefreshLoadedDrops(Player player, bool force = false)
+    {
+        if (!force && Time.unscaledTime < _nextLoadedScan) return;
+        _nextLoadedScan = Time.unscaledTime + 0.5f;
+        LoadedDrops.Clear();
+        foreach (string key in PickedUpUntil.Where(pair => pair.Value <= Time.unscaledTime).Select(pair => pair.Key).ToList())
+            PickedUpUntil.Remove(key);
+
+        IEnumerable<ItemDrop> drops = DropInstances?.GetValue(null) as List<ItemDrop>
+            ?? (IEnumerable<ItemDrop>)Object.FindObjectsByType<ItemDrop>(FindObjectsSortMode.None);
+        foreach (ItemDrop drop in drops)
+        {
+            if (drop == null || !SpearProjectileDetector.IsSpearItem(drop.m_itemData)) continue;
+            if (SpearThrowerMetadata.ReadFromDrop(drop) != player.GetPlayerID()) continue;
+            string key = SpearItemIdentity.BuildDropRecordKey(drop);
+            if (!PickedUpUntil.ContainsKey(key)) LoadedDrops[key] = drop;
+        }
+    }
+
+    internal static bool TryGetNearest(Player player, out Vector3 position, out Sprite? icon)
+    {
+        position = default;
+        icon = null;
+        float best = float.PositiveInfinity;
+        foreach (KeyValuePair<string, ItemDrop> pair in LoadedDrops)
+        {
+            ItemDrop drop = pair.Value;
+            if (drop == null) continue;
+            float distance = (drop.transform.position - player.transform.position).sqrMagnitude;
+            if (distance >= best) continue;
+            best = distance;
+            position = drop.transform.position;
+            icon = GetIcon(drop.m_itemData, drop.m_itemData.m_variant);
+        }
+        foreach (SpearLocationRecord record in ServerRecords)
+        {
+            if (LoadedDrops.ContainsKey(record.Key) || PickedUpUntil.ContainsKey(record.Key)) continue;
+            float distance = (record.Position - player.transform.position).sqrMagnitude;
+            if (distance >= best) continue;
+            best = distance;
+            position = record.Position;
+            GameObject? prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(record.PrefabHash) : null;
+            icon = GetIcon(prefab != null ? prefab.GetComponent<ItemDrop>()?.m_itemData : null, record.Variant);
+        }
+        return !float.IsPositiveInfinity(best);
+    }
+
+    private static Sprite? GetIcon(ItemDrop.ItemData? item, int variant)
+    {
+        Sprite[]? icons = item?.m_shared?.m_icons;
+        return icons != null && icons.Length > 0 ? icons[Mathf.Clamp(variant, 0, icons.Length - 1)] : null;
+    }
+
+    private static List<SpearLocationRecord> GetRecords(Player player)
+    {
+        Dictionary<string, SpearLocationRecord> records = new();
+        foreach (SpearLocationRecord record in ServerRecords)
+            if (!PickedUpUntil.ContainsKey(record.Key)) records[record.Key] = record;
+        foreach (KeyValuePair<string, ItemDrop> pair in LoadedDrops)
+        {
+            if (pair.Value == null)
+            {
+                records.Remove(pair.Key);
+                continue;
+            }
+            records[pair.Key] = new SpearLocationRecord { Key = pair.Key, Position = pair.Value.transform.position };
+        }
+        return records.Values.OrderBy(record => (record.Position - player.transform.position).sqrMagnitude)
+            .Take(FearNoSpearConfig.MaxPinsPerCommand).ToList();
+    }
+
+    private static void PinRecords(List<SpearLocationRecord> records, string missingMessage)
+    {
+        int pinned = SpearPinManager.PinRecords(records, ShowMessage);
+        if (records.Count == 0) ShowMessage(missingMessage);
+        else if (pinned > 0) ShowMessage(pinned == 1 ? "Pinned spear location." : $"Pinned spear locations ({pinned}).");
+    }
+
+    private static void ShowMessage(string message)
+    {
+        Player player = Player.m_localPlayer;
+        if (player != null) player.Message(MessageHud.MessageType.TopLeft, message, 0, null);
+        else FearNoSpearPlugin.Log.LogInfo(message);
+    }
+}

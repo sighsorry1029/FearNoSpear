@@ -1,113 +1,81 @@
 # FearNoSpear
 
-![](https://i.ibb.co/dJbNstbC/Video-Project-27.gif)
+![Automatic indicators for up to five thrown spears](https://i.ibb.co/r17QSNR/fearnospear2.gif)
 
-FearNoSpear prevents thrown spears from disappearing on long throws, zone unloads, and network cleanup. It also adds a chat locator for tracked spears and small tombstone quality-of-life protections.
+*Track up to five thrown spears automatically.*
 
-## Features
+![Thrown spears marked with light beams and HUD icons](https://i.ibb.co/B2h3GTKy/Screenshot-2026-10-03-141025.png)
 
-- Protects recoverable thrown spear projectiles.
-- Extends tracked spear projectile TTL to a fixed 60 seconds.
-- Rescues the original spear before TTL expiry or unexpected projectile cleanup.
-- Uses Valheim's own `Projectile.SpawnOnHit` path first, then verifies that a matching spear drop exists.
-- Falls back to `ItemDrop.DropItem` only when the native path cannot produce a matching drop.
-- Uses owner-only rescue and a ZDO claim flag to reduce multiplayer duplicate-spawn risk.
-- Never deletes an existing spear merely because it matches the rescued spear's item data.
-- Adds a configurable chat command, default `!myspear`, that pins up to 5 thrown spear locations.
-- Optionally removes vanilla death pins when the local player's tombstone is recovered, and removes death pins from deaths that create no tombstone.
-- Prevents other players from opening or auto-looting an owned tombstone by default.
-- Allows members of the owner's Clan, including Guests, to recover the tombstone when the optional Clan mod is installed.
+*Light beams with item icons and distances.*
 
-## Chat Locator
+![Thrown spears shown with HUD icons only](https://i.ibb.co/DHSWLRy4/Screenshot-2026-10-03-141037.png)
 
-Type the configured command in normal in-game chat:
+*HUD-only markers.*
 
-```text
-!myspear
-```
+![Screen-edge markers pointing toward spears behind the player](https://i.ibb.co/Xx7X8wyT/Screenshot-2026-10-03-141102.png)
 
-The command is consumed locally, so it is not sent as public chat. It creates saved minimap pins for known tracked spear locations and opens the map. A single result is named `Spear!`; multiple results are named `Spear 1`, `Spear 2`, and so on.
+*Screen-edge markers guide you toward spears outside your view.*
 
-Thrown spears are tagged with a small `FearNoSpear.ThrowerPlayerID` ZDO value. When the command is used, the server searches spear drop ZDOs for that thrower metadata and returns matching positions, including unloaded areas that still have saved ZDOs.
+FearNoSpear helps prevent thrown spears from disappearing and shows where to find them. It also prevents accidental auto-pickup by other players and adds simple tombstone protections.
 
-Loaded `ItemDrop` scanning is also used to refresh the exact current position when the spear is nearby. Spears without thrower metadata are ignored by the locator so old projectile positions do not create stale pins.
+## Find Your Spears
 
-When a tracked spear is picked up, locator pins created by the current session are removed by matching the exact spear drop record.
+Markers appear after your spear lands or is rescued. Show your nearest spear by default, or up to five at once. Nearby markers follow moving drops; distant positions refresh from the server about every five seconds, including unloaded areas.
 
-## Death Pin Cleanup
+| Display mode | What you see |
+| --- | --- |
+| `BeamAndHud` | A light beam, item icon, and distance. Default. |
+| `Beam` | A light beam only. |
+| `Hud` | An item icon and distance, with screen-edge direction markers. |
+| `Off` | No indicators or automatic location queries. Spear protection stays active. |
 
-`CleanDeathPins` removes the vanilla `Death` map pin when the local player's tombstone is recovered. It also removes the death pin immediately if the death created no tombstone, such as when there was nothing to drop.
+Beams extend 500 meters upward and widen with distance, from 0.1 to 1 meter. Terrain and render distance can hide them; HUD markers remain visible through terrain and beyond the world rendering range.
 
-The cleanup only targets saved minimap pins of type `Death` near the matching death or tombstone position.
+Only your tagged spear drops are tracked. Markers disappear when you pick them up. The mod does not add chat commands or spear map pins.
 
-## Tombstone Access
+## Spear Auto-Pickup
 
-`OwnerOnlyTombstones` prevents a player from opening or auto-looting another player's tombstone. The owner is matched by Valheim's player ID stored on the tombstone, not by player name.
+Only the thrower can automatically attract and pick up a tagged spear. Other players can still pick it up manually.
 
-A server administrator or the local host can bypass the lock only while Valheim devcommands and debug mode are both active. When the optional `sighsorry.Clan` mod is installed, anyone in the local player's active Clan roster may recover the tombstone; this includes the Guest role. Clan's normal gameplay rule applies, so a Guest clan takes precedence over the player's primary clan when choosing the active roster.
+Spears dropped from inventory and items without a thrower tag keep normal pickup behavior. This rule is always active, including when indicators are off.
 
-Tombstones with no valid owner ID are left accessible to avoid permanently locking malformed or uninitialized objects. If Clan is absent, its state is not ready, or its API is incompatible, access safely falls back to the owner and admin-debug rules. This is a synchronized gameplay rule for normal modded clients, not an anti-cheat boundary against a deliberately modified client.
+## Tombstones
 
-## Config
+By default, only the owner can open or recover a tombstone, with two exceptions:
 
-Available config options:
+- Server admins and the local host can bypass this mod's lock while in debug mode.
+- With Clan, members of your active roster, including Guests, can recover clanmates' tombstones.
 
-```ini
-[General]
-Lock Configuration = On
-Enabled = true
-ChatCommand = !myspear
-CleanDeathPins = true
-OwnerOnlyTombstones = true
+These exceptions do not bypass other mods' locks, full inventories, or containers already in use.
 
-[Rescue]
-TTLRescueWindowSeconds = 1.0
-AllowLastKnownOwnerIfZNetViewInvalid = true
-LastKnownOwnerGraceSeconds = 2
-```
+Death-pin cleanup removes your map pin when your tombstone is recovered. If a death creates no tombstone, it removes the pin after an eight-second grace period.
 
-### General
+## Settings
 
-`Lock Configuration`  
-Locks synchronized settings to the authoritative config.
+All settings are in `[General]`.
 
-`Enabled`  
-Master switch for spear tracking, rescue, locator, death pin cleanup, and tombstone access protection.
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `Lock Configuration` | `On` | Locks the tombstone access setting to the server's value. |
+| `SpearIndicatorStyle` | `BeamAndHud` | Choose a display mode from the table above. |
+| `MaxDisplayedSpears` | `1` | Show 1 to 5 of your nearest spear drops. |
+| `CleanDeathPins` | `true` | Clean up your death pins. |
+| `OwnerOnlyTombstones` | `true` | Apply the owner, admin, and Clan access rules. |
 
-`ChatCommand`  
-Chat command used to pin known tracked spear locations. The comparison is case-insensitive. Leave empty to disable the chat command.
+Indicator and death-pin settings are personal. Only `OwnerOnlyTombstones` is synchronized through ServerSync.
 
-`CleanDeathPins`  
-Enables death pin cleanup for recovered tombstones and deaths that create no tombstone.
+## Built-In Protection
 
-`OwnerOnlyTombstones`
+These rules are always active and have no config switches:
 
-Prevents players from opening or auto-looting tombstones owned by another player. Administrators and the local host can bypass it while devcommands and debug mode are active. With Clan installed, the active roster, including Guests, is also allowed. Enabled by default and synchronized through ServerSync.
+- Tracked spear projectiles get a minimum lifetime of 60 seconds.
+- Rescue starts in the final second, with a minimum physics-step safety margin.
+- Unexpected projectile removal also triggers a rescue attempt.
+- The game's normal drop method runs first, with a stored-item fallback if needed.
+- With valid network data, only the current owner may rescue. If that data becomes invalid, the last confirmed owner may rescue only when its ownership was verified within the past two seconds.
+- Ownership checks, a shared rescue flag, and one attempt per local tracker help prevent duplicates.
+- Existing drops are never deleted just because their item data matches a rescued spear.
 
-### Rescue
+Protection reduces loss and duplicate risk; it cannot eliminate either in every network situation. In particular, invalid network data can prevent clients from sharing the rescue flag.
 
-`TTLRescueWindowSeconds`  
-How close to projectile TTL expiry the mod should rescue a still-airborne tracked spear. `1.0` means the final second of projectile lifetime.
-
-`AllowLastKnownOwnerIfZNetViewInvalid`  
-Allows the most recent known owner to rescue if the projectile `ZNetView` has already become invalid.
-
-`LastKnownOwnerGraceSeconds`  
-Maximum age, in seconds, for the last-known owner fallback.
-
-## Fixed Internal Defaults
-
-These are intentionally not exposed as config options:
-
-- Minimum tracked spear projectile TTL: `60` seconds.
-- Locator pins per command: `5`.
-- Spear detection uses the item skill first, with a case-insensitive `spear` name fallback for compatible modded items.
-- Rescue before TTL expiry: enabled.
-- Rescue on unexpected destroy: enabled.
-- ItemDrop fallback: enabled.
-- Owner-only rescue: enabled.
-- ZDO rescue claim flag: enabled.
-- Nearby native-drop verification and metadata matching radius: `4` meters.
-
-## Github
-https://github.com/sighsorry1029/FearNoSpear
+[Source code](https://github.com/sighsorry1029/FearNoSpear)
