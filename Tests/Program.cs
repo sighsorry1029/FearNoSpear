@@ -39,6 +39,7 @@ internal static class Program
             }
             Assembly builtMod = Assembly.LoadFrom(Path.GetFullPath(args[1]));
             CheckProtocol(builtMod);
+            CheckSpearClassification(builtMod);
             CheckNearestSelection(builtMod);
             CheckBeamHud(builtMod);
             System.Console.WriteLine($"PASS: {_passed} original-DLL static/serialization/placement checks. Unity/Harmony runtime gameplay was not executed.");
@@ -205,6 +206,44 @@ internal static class Program
             Calls(pipeline).Where(m => m.Name == "SpawnThroughValheimPath" || m.Name == "TryDropStoredItem")
                 .Select(m => m.Name).SequenceEqual(new[] { "SpawnThroughValheimPath", "TryDropStoredItem" }),
             "rescue retains the ground-only guard, exact native drop confirmation, and native-first fallback order");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CheckSpearClassification(Assembly mod)
+    {
+        Type detector = mod.GetType("FearNoSpear.SpearProjectileDetector", true);
+        MethodInfo classify = detector.GetMethod("IsSpearItem", Fields);
+        bool IsSpear(ItemDrop.ItemData item) => (bool)classify.Invoke(null, new object[] { item });
+        Expect(!IsSpear(null), "missing item cannot be classified as a spear");
+        var item = (ItemDrop.ItemData)RuntimeHelpers.GetUninitializedObject(typeof(ItemDrop.ItemData));
+        Expect(!IsSpear(item), "item without shared data cannot be classified as a spear");
+        item.m_shared = (ItemDrop.ItemData.SharedData)RuntimeHelpers.GetUninitializedObject(typeof(ItemDrop.ItemData.SharedData));
+        item.m_shared.m_name = "$item_ordinary";
+        foreach (Skills.SkillType skill in Enum.GetValues(typeof(Skills.SkillType)))
+        {
+            item.m_shared.m_skillType = skill;
+            Expect(IsSpear(item) == (skill == Skills.SkillType.Spears),
+                "native skill classification without a spear name: " + skill);
+        }
+        foreach (int value in new[] { -1, int.MinValue, int.MaxValue, 5000 })
+        {
+            item.m_shared.m_skillType = (Skills.SkillType)value;
+            Expect(!IsSpear(item), "undefined/custom skill needs a spear-like name: " + value);
+        }
+        item.m_shared.m_skillType = Skills.SkillType.Spears;
+        item.m_shared.m_name = null;
+        Expect(IsSpear(item), "native spear skill does not require a name");
+        item.m_shared.m_skillType = Skills.SkillType.Swords;
+        foreach (string name in new[] { null, "", "$item_sword_iron", "SP EAR" })
+        {
+            item.m_shared.m_name = name;
+            Expect(!IsSpear(item), "unrelated or missing name does not broaden tracked weapons");
+        }
+        foreach (string name in new[] { "spear", "SPEAR", "$item_spear_flint", "JC_Reaper_Spear", "spearman" })
+        {
+            item.m_shared.m_name = name;
+            Expect(IsSpear(item), "case-insensitive substring fallback is preserved: " + name);
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

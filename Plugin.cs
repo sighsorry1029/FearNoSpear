@@ -338,9 +338,7 @@ namespace FearNoSpear
         {
             if (item?.m_shared == null) return false;
 
-            string skill = item.m_shared.m_skillType.ToString();
-            if (string.Equals(skill, "Spears", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(skill, "Spear", StringComparison.OrdinalIgnoreCase))
+            if (item.m_shared.m_skillType == Skills.SkillType.Spears)
             {
                 return true;
             }
