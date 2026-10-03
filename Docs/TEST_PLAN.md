@@ -2,7 +2,7 @@
 
 ## Indicator and auto-pickup checks
 
-The offline checks inspect the original installed game DLL and the final merged mod DLL, then exercise location-record serialization, nearest-N selection, and HUD placement without starting Unity:
+The offline checks inspect the original installed game DLL and the final merged mod DLL, then exercise location-record serialization, player-grouped candidate caches using isolated managed ZDO fixtures, nearest-weapon/newest-tombstone selection, in-game age formatting, and up to ten HUD markers without starting Unity:
 
 ```powershell
 dotnet build FearNoSpear.sln -c Debug -p:DeployToGame=true
@@ -10,7 +10,7 @@ dotnet build Tests/FearNoSpear.Checks.csproj -c Debug
 dotnet Tests/bin/Debug/net8.0/FearNoSpear.Checks.dll "C:/Program Files (x86)/Steam/steamapps/common/Valheim" bin/Debug/FearNoSpear.dll
 ```
 
-These checks do not apply Harmony detours in Unity, render the indicator, or simulate network ownership. The original DLLs are not publicized or modified. Both server and clients must use the same updated build for the protocol-6 location response.
+These checks do not apply Harmony detours in Unity, render the indicator, or simulate network ownership. The original DLLs are not publicized or modified. Both server and clients must use the same updated build for the protocol-7 location response.
 
 Run these gameplay cases on a local host and a dedicated server with two modded clients:
 
@@ -19,7 +19,7 @@ Run these gameplay cases on a local host and a dedicated server with two modded 
 3. Watch a spear bounce, roll, or float. Nearby indicators must follow loaded drops. Move far enough to unload them, then verify automatic server updates still find them.
 4. Stand beside another player's thrown spear. It must not move toward you or auto-pick up. Manual interaction must still work. The thrower must auto-pick up normally, subject to vanilla inventory/weight/pickup rules. Clan membership does not bypass the spear rule.
 5. Drop a spear from inventory rather than throwing it. Check that it has no thrower tag and uses vanilla pickup behavior. Check ordinary items too.
-6. Change style, count, and CleanDeathPins independently on two clients while Lock Configuration is On. These preferences must remain local. OwnerOnlyTombstones must remain server-controlled. Rescue uses fixed internal rules and must not register config entries. With style Off, local queries stop but protection and thrower-only pickup still work; a host using Off must still answer other clients.
+6. Change both indicator styles, count, and CleanDeathPins independently on two clients while Lock Configuration is On. These preferences must remain local. OwnerOnlyTombstones must remain server-controlled. Rescue uses fixed internal rules and must not register config entries. With both styles Off, local queries stop but protection and thrower-only pickup still work; a host using Off must still answer other clients. With just one style Off, the other category must keep working.
 7. Confirm no chat-input Harmony patch or spear map-pin creation remains. Old command text is ordinary chat. Existing saved map pins must not be broadly deleted. Archive sources must be absent from the compiled assembly and build output; no migration or legacy execution path is expected.
 8. Pick up a spear while a location response is delayed. It must not reappear from that stale response. Test empty responses, timeouts, reconnect, death, logout, and world changes. Toggle Off while a response is pending, then enable indicators again.
 9. Test normal hits, TTL rescue, and unexpected-destroy rescue. Check the exact returned drop's ThrowerPlayerID, original item data, and absence of duplicate drops. Check non-spear projectile behavior.
@@ -27,6 +27,15 @@ Run these gameplay cases on a local host and a dedicated server with two modded 
 11. Profile 1 and 5 indicators in BeamAndHud, Beam, and Hud. Beams must be reused and remain within fixed width bounds of 0.1 to 1 meter. Check 0.1 meters at close range, 0.7 meters at 500 meters, and the 1-meter cap beyond about 714 meters. Width follows distance times 0.0014 and must not resize HUD markers. No beam-width config entries should be registered. Display count must not multiply requests or scans. HUD must not intercept mouse input. Actual rendering and frame-time costs require gameplay measurements.
 12. On a dedicated server, compare an administrator with debug mode on/off and a non-admin with debug mode on. Only admin + debug may bypass this mod's owner restriction. Verify the local host, ordinary owner, Clan members/Guests, and unrelated players. Container-in-use and inventory restrictions must remain intact.
 13. Recover your tombstone with CleanDeathPins true/false and die with no inventory. Only the local configured behavior should affect death pins. Other players' personal settings and saved custom pins must remain untouched.
+14. Equip non-spear weapons configured with SecondaryAttacks ImpactBurst. Check normal landing, bounce, distant/unloaded lookup, correct icon/variant, original durability/custom data, owner-only auto-pickup, and manual pickup by another player. Repeat with either mod's patch registration order. The exact returned drop must receive the thrower tag. Inventory drops must not acquire a tag.
+15. Exercise SpearRain followups, boomerang catch, full-inventory boomerang return, and other copied throws. Followups and successfully caught weapons must not create rescue drops. A real dropped copied weapon may be tracked. Test both mods without the other installed.
+16. Leave six or more tombstones, including two at the same spot and old graves far away. MaxDisplayedTombstones defaults to 1; test every value from 1 to 5, including live decreases and increases. Only your newest N remaining graves should appear, regardless of distance or Clan membership. Values 0 and 6 must clamp to 1 and 5. The count is personal, independent of the weapon count, and does not multiply server requests. Fully recover the newest and confirm the next remaining grave enters the selection. Partial loot must retain the marker. Deleting a death map pin must not change the HUD. Recover a grave as an authorized clanmate/admin and observe the owner's next server refresh.
+17. Verify tombstone age beneath the icon and distance on its right. At a 1200-second world day, 3000 world seconds means 2d 12h. Test sleep/time skips, clock rewind, custom day length, missing timestamps, restart, reconnect, and a world change. No real date or extra persistent timestamp is created.
+18. Show five weapons and five tombstones together, including all markers on one screen edge. Test each pair of BeamAndHud/Beam/Hud/Off styles, low/high resolutions, and live toggles. Labels, age, and pointers must fit without overlaps; beam-only targets must not consume HUD placement slots. Check profiling with ten pooled renderers and no forced zone loads. These visual and performance checks require Unity gameplay.
+19. Delay an old response across a style toggle or tombstone recovery. The request ID and exact-key suppression must prevent stale resurrection. Move away to unload a still-existing grave and confirm it remains discoverable from the server. Verify an old protocol-6 peer is explicitly rejected and that server-local display settings do not constrain clients.
+20. Check yellow weapon beams and bright lavender tombstone beams, with the same upward fade and unchanged HUD icons. Reuse a pooled marker across weapon/tombstone/weapon targets and toggle Hud back to Beam. Colors must not carry over from the previous target type. Check that material count remains shared and stable after warm-up.
+21. Profile large-world server queries with multiple clients, separating cached requests from each requested category's five-second candidate scan. Requests between refreshes must inspect only that player's candidate bucket, with live owner/existence checks. A new remote target may need roughly ten seconds for discovery, excluding network delays. Changing ownership or destroying a cached ZDO must not leak another player's target or return a destroyed one. On the client, full candidate selection should follow the half-second scan or explicit invalidation, while selected moving drops follow every frame. Measure frame time, allocations, and transparent overdraw; full world scans and half-second candidate work still need profiling.
+22. Change both display counts and styles live, move between two nearly equidistant drops, and recover the selected drop/grave just after a scan. Count/style changes and local pickup must not wait for the next scan; nearest-weapon switching may wait up to half a second. Check server response/expiry, empty graves, unload/reload, map/menu hide and show, reconnect, and world changes. Cached targets must not persist beyond these invalidations, and the next eligible target must replace a recovered one.
 
 ## Test setup
 
@@ -94,7 +103,7 @@ Verify these are not affected:
 - arrows,
 - bolts,
 - enemy projectiles,
-- thrown non-spear items if any,
+- unrelated thrown non-spear items (SecondaryAttacks copied recoverable throws are intentionally supported),
 - harpoon behavior,
 - normal spear hit-and-pickup behavior,
 - multiplayer with several clients in the same area.

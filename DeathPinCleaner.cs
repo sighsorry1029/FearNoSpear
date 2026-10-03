@@ -195,6 +195,16 @@ internal static class TombStoneSetupDeathPinPatch
     private static void Postfix(TombStone __instance)
     {
         DeathPinCleaner.RegisterTombstone(__instance);
+        SpearLocator.ObserveTombstone(__instance);
+    }
+}
+
+[HarmonyPatch(typeof(TombStone), "Awake")]
+internal static class TombStoneIndicatorAwakePatch
+{
+    private static void Postfix(TombStone __instance)
+    {
+        SpearLocator.ObserveTombstone(__instance);
     }
 }
 
@@ -368,6 +378,7 @@ internal static class TombStoneTakeAllDeathPinPatch
     private static void Postfix(TombStone __instance)
     {
         DeathPinCleaner.CleanForRecoveredTombstone(__instance);
+        SpearLocator.HideEmptyTombstone(__instance);
     }
 }
 
@@ -377,5 +388,6 @@ internal static class TombStoneUpdateDespawnDeathPinPatch
     private static void Prefix(TombStone __instance)
     {
         DeathPinCleaner.CleanIfTombstoneIsEmpty(__instance);
+        SpearLocator.HideEmptyTombstone(__instance);
     }
 }

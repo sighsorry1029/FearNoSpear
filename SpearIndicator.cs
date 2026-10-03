@@ -9,10 +9,14 @@ namespace FearNoSpear;
 internal static class SpearIndicator
 {
     private const float BeamHeight = 500f;
-    private static readonly List<SpearLocator.Target> Targets = new(FearNoSpearConfig.MaxLocationResults);
-    private static readonly List<Marker> Markers = new(FearNoSpearConfig.MaxLocationResults);
-    private static readonly List<Vector2> HudPositions = new(FearNoSpearConfig.MaxLocationResults);
-    private static readonly int[] HudOrder = new int[FearNoSpearConfig.MaxLocationResults];
+    private const float HudGap = 116f;
+    private const float HudWidth = 192f;
+    private const float HudMarginY = 80f;
+    private static readonly List<SpearLocator.Target> Targets = new(FearNoSpearConfig.MaxIndicatorResults);
+    private static readonly List<Marker> Markers = new(FearNoSpearConfig.MaxIndicatorResults);
+    private static readonly List<Marker> HudMarkers = new(FearNoSpearConfig.MaxIndicatorResults);
+    private static readonly List<Vector2> HudPositions = new(FearNoSpearConfig.MaxIndicatorResults);
+    private static readonly int[] HudOrder = new int[FearNoSpearConfig.MaxIndicatorResults];
     private static GameObject? _root;
     private static Canvas? _canvas;
     private static Material? _material;
@@ -28,6 +32,7 @@ internal static class SpearIndicator
         _material = null;
         Targets.Clear();
         Markers.Clear();
+        HudMarkers.Clear();
         HudPositions.Clear();
         _retryAt = 0f;
     }
@@ -47,8 +52,9 @@ internal static class SpearIndicator
             return;
         }
         Camera camera = Utils.GetMainCamera();
-        FearNoSpearPlugin.IndicatorStyle style = FearNoSpearPlugin.Cfg.SpearIndicatorStyle.Value;
-        if (FearNoSpearPlugin.IsShuttingDown || style == FearNoSpearPlugin.IndicatorStyle.Off ||
+        if (FearNoSpearPlugin.IsShuttingDown ||
+            (FearNoSpearPlugin.Cfg.SpearIndicatorStyle.Value == FearNoSpearPlugin.IndicatorStyle.Off &&
+             FearNoSpearPlugin.Cfg.TombstoneIndicatorStyle.Value == FearNoSpearPlugin.IndicatorStyle.Off) ||
             camera == null || camera.pixelHeight <= 0 || Hud.instance == null ||
             !Hud.instance.IsVisible() || Hud.IsUserHidden() ||
             player.IsDead() || player.IsTeleporting() || player.IsSleeping() ||
@@ -58,7 +64,7 @@ internal static class SpearIndicator
             return;
         }
 
-        SpearLocator.GetNearest(player, Targets, FearNoSpearPlugin.Cfg.MaxDisplayedSpears.Value);
+        SpearLocator.GetTargets(player, Targets, FearNoSpearPlugin.Cfg.MaxDisplayedSpears.Value);
         if (Targets.Count == 0)
         {
             Hide();
@@ -66,17 +72,24 @@ internal static class SpearIndicator
         }
         if ((_root == null || _canvas == null) && !Create()) return;
 
-        bool beam = style == FearNoSpearPlugin.IndicatorStyle.BeamAndHud || style == FearNoSpearPlugin.IndicatorStyle.Beam;
-        bool hud = style == FearNoSpearPlugin.IndicatorStyle.BeamAndHud || style == FearNoSpearPlugin.IndicatorStyle.Hud;
-        _root!.SetActive(beam);
-        _canvas!.gameObject.SetActive(hud);
+        int hudCount = 0;
+        bool anyBeam = false;
+        foreach (SpearLocator.Target target in Targets)
+        {
+            FearNoSpearPlugin.IndicatorStyle style = GetStyle(target.Kind);
+            anyBeam |= HasBeam(style);
+            if (HasHud(style)) ++hudCount;
+        }
+        _root!.SetActive(anyBeam);
+        _canvas!.gameObject.SetActive(hudCount > 0);
         Rect viewport = camera.pixelRect;
         Rect safe = Screen.safeArea;
         Rect safeViewport = Rect.MinMaxRect(Mathf.Max(viewport.xMin, safe.xMin), Mathf.Max(viewport.yMin, safe.yMin),
             Mathf.Min(viewport.xMax, safe.xMax), Mathf.Min(viewport.yMax, safe.yMax));
         if (safeViewport.width <= 0f || safeViewport.height <= 0f) safeViewport = viewport;
-        float scale = GetHudScale(safeViewport, Targets.Count);
+        float scale = GetHudScale(safeViewport, hudCount);
         HudPositions.Clear();
+        HudMarkers.Clear();
 
         foreach (Marker marker in Markers)
         {
@@ -90,11 +103,22 @@ internal static class SpearIndicator
         foreach (SpearLocator.Target target in Targets)
         {
             Marker marker = GetMarker(target.Key);
+            FearNoSpearPlugin.IndicatorStyle style = GetStyle(target.Kind);
+            bool beam = HasBeam(style);
+            bool hud = HasHud(style);
             float distance = Vector3.Distance(player.transform.position, target.Position);
             marker.Beam.gameObject.SetActive(beam);
             marker.Label.gameObject.SetActive(hud);
             if (beam)
             {
+                if (marker.BeamKind != target.Kind)
+                {
+                    marker.BeamKind = target.Kind;
+                    Color color = GetBeamColor(target.Kind);
+                    marker.Beam.startColor = color;
+                    color.a = 0.15f;
+                    marker.Beam.endColor = color;
+                }
                 if (!marker.BeamPositionSet || (target.Position - marker.BeamPosition).sqrMagnitude > 0.000001f)
                 {
                     marker.BeamPositionSet = true;
@@ -117,6 +141,7 @@ internal static class SpearIndicator
             bool edge = GetHudPlacement(projected, new Vector2(view.x, view.y), viewport, safeViewport, scale,
                 out Vector2 position, out Vector2 direction);
             HudPositions.Add(position);
+            HudMarkers.Add(marker);
             marker.Label.localScale = Vector3.one * scale;
             marker.Pointer.gameObject.SetActive(edge);
             if (edge) marker.Pointer.localRotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f);
@@ -127,14 +152,44 @@ internal static class SpearIndicator
                 marker.Distance.text = distance < 1000f ? $"{distance:0} m" : $"{distance / 1000f:0.0} km";
                 marker.NextTextAt = Time.unscaledTime + 0.1f;
             }
+            bool tombstone = target.Kind == LocationKind.Tombstone;
+            marker.Age.gameObject.SetActive(tombstone);
+            if (tombstone && Time.unscaledTime >= marker.NextAgeAt)
+            {
+                marker.Age.text = ZNet.instance != null && EnvMan.instance != null
+                    ? FormatAge(target.CreatedTicks, ZNet.instance.GetTime().Ticks, EnvMan.instance.m_dayLengthSec)
+                    : string.Empty;
+                marker.NextAgeAt = Time.unscaledTime + 1f;
+            }
         }
-        if (hud)
+        if (hudCount > 0)
         {
             ArrangeHud(safeViewport, scale, HudPositions);
             Vector2 center = new Vector2(Screen.width, Screen.height) * 0.5f;
-            for (int i = 0; i < Targets.Count; ++i)
-                GetMarker(Targets[i].Key).Label.anchoredPosition = HudPositions[i] - center;
+            for (int i = 0; i < HudMarkers.Count; ++i)
+                HudMarkers[i].Label.anchoredPosition = HudPositions[i] - center;
         }
+    }
+
+    private static FearNoSpearPlugin.IndicatorStyle GetStyle(LocationKind kind)
+        => kind == LocationKind.Tombstone ? FearNoSpearPlugin.Cfg.TombstoneIndicatorStyle.Value
+            : FearNoSpearPlugin.Cfg.SpearIndicatorStyle.Value;
+
+    private static bool HasBeam(FearNoSpearPlugin.IndicatorStyle style)
+        => style == FearNoSpearPlugin.IndicatorStyle.BeamAndHud || style == FearNoSpearPlugin.IndicatorStyle.Beam;
+
+    private static bool HasHud(FearNoSpearPlugin.IndicatorStyle style)
+        => style == FearNoSpearPlugin.IndicatorStyle.BeamAndHud || style == FearNoSpearPlugin.IndicatorStyle.Hud;
+
+    private static string FormatAge(long createdTicks, long nowTicks, double dayLengthSeconds)
+    {
+        if (createdTicks <= 0L || createdTicks > System.DateTime.MaxValue.Ticks ||
+            dayLengthSeconds <= 0d || double.IsNaN(dayLengthSeconds) || double.IsInfinity(dayLengthSeconds)) return string.Empty;
+        double days = System.Math.Max(0d, (nowTicks - (double)createdTicks) / System.TimeSpan.TicksPerSecond / dayLengthSeconds);
+        long wholeDays = (long)System.Math.Min(9999d, System.Math.Floor(days));
+        if (days >= 10000d) return "9999d+";
+        int hours = (int)System.Math.Floor((days - wholeDays) * 24d);
+        return $"{wholeDays}d {hours}h";
     }
 
     private static Marker GetMarker(string key)
@@ -150,6 +205,7 @@ internal static class SpearIndicator
             if (retained) continue;
             marker.Key = key;
             marker.NextTextAt = 0f;
+            marker.NextAgeAt = 0f;
             return marker;
         }
         Marker created = new(_root!.transform, _canvas!.transform, _material!, Hud.instance.m_healthText.font) { Key = key };
@@ -162,17 +218,20 @@ internal static class SpearIndicator
         return Mathf.Clamp(distance * 0.0014f, 0.1f, 1f);
     }
 
+    private static Color GetBeamColor(LocationKind kind)
+        => kind == LocationKind.Tombstone ? new Color(0.8f, 0.6f, 1f, 1f) : new Color(1f, 0.85f, 0.3f, 1f);
+
     private static float GetHudScale(Rect safeViewport, int count)
     {
         // Reserve enough vertical space for all labels, including their edge pointers.
         return Mathf.Min(1f, Mathf.Min(safeViewport.width / 320f,
-            safeViewport.height / (Mathf.Clamp(count, 1, FearNoSpearConfig.MaxLocationResults) * 90f + 136f)));
+            safeViewport.height / (Mathf.Clamp(count, 1, FearNoSpearConfig.MaxIndicatorResults) * HudGap + HudMarginY * 2f)));
     }
 
     private static bool GetHudPlacement(Vector3 projected, Vector2 behindDirection, Rect viewport, Rect safeViewport,
         float scale, out Vector2 position, out Vector2 direction)
     {
-        Vector2 halfSize = new(safeViewport.width * 0.5f - 100f * scale, safeViewport.height * 0.5f - 68f * scale);
+        Vector2 halfSize = new(safeViewport.width * 0.5f - 100f * scale, safeViewport.height * 0.5f - HudMarginY * scale);
         Vector2 center = safeViewport.center;
         Vector2 offset = new((projected.x - 0.5f) * viewport.width, (projected.y - 0.5f) * viewport.height);
         bool behind = projected.z <= 0f;
@@ -208,15 +267,15 @@ internal static class SpearIndicator
             }
             HudOrder[j] = i;
         }
-        float gap = 90f * scale;
+        float gap = HudGap * scale;
         for (int i = 0; i < positions.Count; ++i)
         {
             Vector2 point = positions[HudOrder[i]];
-            point.y = Mathf.Max(point.y, safeViewport.yMin + 68f * scale);
+            point.y = Mathf.Max(point.y, safeViewport.yMin + HudMarginY * scale);
             for (int j = 0; j < i; ++j)
             {
                 Vector2 previous = positions[HudOrder[j]];
-                if (Mathf.Abs(point.x - previous.x) < 160f * scale)
+                if (Mathf.Abs(point.x - previous.x) < HudWidth * scale)
                     point.y = Mathf.Max(point.y, previous.y + gap);
             }
             positions[HudOrder[i]] = point;
@@ -225,11 +284,11 @@ internal static class SpearIndicator
         for (int i = positions.Count - 1; i >= 0; --i)
         {
             Vector2 point = positions[HudOrder[i]];
-            point.y = Mathf.Min(point.y, safeViewport.yMax - 68f * scale);
+            point.y = Mathf.Min(point.y, safeViewport.yMax - HudMarginY * scale);
             for (int j = i + 1; j < positions.Count; ++j)
             {
                 Vector2 next = positions[HudOrder[j]];
-                if (Mathf.Abs(point.x - next.x) < 160f * scale)
+                if (Mathf.Abs(point.x - next.x) < HudWidth * scale)
                     point.y = Mathf.Min(point.y, next.y - gap);
             }
             positions[HudOrder[i]] = point;
@@ -246,7 +305,7 @@ internal static class SpearIndicator
 
         _root = new GameObject("FearNoSpear Beams");
         _root.SetActive(false);
-        _material = new Material(shader) { color = new Color(1f, 0.85f, 0.3f, 0.95f) };
+        _material = new Material(shader) { color = new Color(1f, 1f, 1f, 0.95f) };
         GameObject canvasObject = new("FearNoSpear Indicator UI", typeof(RectTransform), typeof(Canvas));
         canvasObject.SetActive(false);
         _canvas = canvasObject.GetComponent<Canvas>();
@@ -259,14 +318,17 @@ internal static class SpearIndicator
     {
         internal string Key = string.Empty;
         internal float NextTextAt;
+        internal float NextAgeAt;
         internal Vector3 BeamPosition;
         internal float BeamWidth;
         internal bool BeamPositionSet;
+        internal LocationKind? BeamKind;
         internal readonly LineRenderer Beam;
         internal readonly RectTransform Label;
         internal readonly RectTransform Pointer;
         internal readonly Image Icon;
         internal readonly TextMeshProUGUI Distance;
+        internal readonly TextMeshProUGUI Age;
 
         internal Marker(Transform root, Transform canvas, Material material, TMP_FontAsset font)
         {
@@ -290,7 +352,7 @@ internal static class SpearIndicator
             label.transform.SetParent(canvas, false);
             Label = label.GetComponent<RectTransform>();
             Label.anchorMin = Label.anchorMax = Label.pivot = new Vector2(0.5f, 0.5f);
-            Label.sizeDelta = new Vector2(152f, 44f);
+            Label.sizeDelta = new Vector2(192f, 96f);
 
             GameObject pointer = new("Edge direction", typeof(RectTransform), typeof(CanvasRenderer), typeof(SpearEdgeArrow));
             pointer.transform.SetParent(Label, false);
@@ -320,6 +382,24 @@ internal static class SpearIndicator
             Distance.textWrappingMode = TextWrappingModes.NoWrap;
             Distance.rectTransform.sizeDelta = new Vector2(108f, 44f);
             Distance.rectTransform.anchoredPosition = new Vector2(24f, 0f);
+
+            GameObject age = new("Age", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+            age.transform.SetParent(Label, false);
+            Age = age.GetComponent<TextMeshProUGUI>();
+            Age.font = font;
+            Age.fontSize = 16f;
+            Age.enableAutoSizing = true;
+            Age.fontSizeMin = 12f;
+            Age.fontSizeMax = 16f;
+            Age.alignment = TextAlignmentOptions.Center;
+            Age.color = Color.white;
+            Age.outlineWidth = 0.25f;
+            Age.outlineColor = Color.black;
+            Age.raycastTarget = false;
+            Age.textWrappingMode = TextWrappingModes.NoWrap;
+            Age.rectTransform.sizeDelta = new Vector2(80f, 24f);
+            Age.rectTransform.anchoredPosition = new Vector2(-54f, -34f);
+            age.SetActive(false);
         }
     }
 }

@@ -62,6 +62,8 @@ RpcAoiAggression = 0
 Lock Configuration = On
 SpearIndicatorStyle = BeamAndHud
 MaxDisplayedSpears = 1
+TombstoneIndicatorStyle = BeamAndHud
+MaxDisplayedTombstones = 1
 CleanDeathPins = true
 OwnerOnlyTombstones = true
 ```
@@ -73,14 +75,17 @@ OwnerOnlyTombstones = true
 - 멀티플레이에서 두 클라이언트가 같은 창을 중복 생성하지 않는다.
 - 표시 개수를 1~5로 바꾸면 자신의 추적된 창을 가까운 순서로 자동 표시한다.
 - 창을 주우면 정확히 해당 창의 표시가 사라지고 다음으로 가까운 창을 표시한다.
-- `Off`에서는 표시와 로컬 위치 조회만 멈추고 소실 방지와 투척자 전용 자동줍기는 유지한다.
+- 두 표시 설정이 모두 `Off`이면 로컬 위치 조회가 멈춘다. 한쪽만 끄면 다른 종류의 표시는 유지하고 소실 방지와 투척자 전용 자동줍기는 계속 적용한다.
+- ImpactBurst의 실제 드롭은 무기 종류와 관계없이 추적하며, SpearRain 추가 투사체와 회수 완료된 부메랑은 복제하지 않는다.
+- 묘비는 내 소유 중 아직 남아 있는 최신 1~5개를 설정에 따라 표시하며 기본값은 1개다. 아이콘 아래의 `2d 12h`는 게임 내 경과 시간이다. 부분 회수·맵 핀 삭제로 표시가 사라지지 않아야 한다.
+- 무기 5개와 묘비 5개를 함께 표시해 아이콘·거리·시간·방향 표시의 겹침을 확인한다.
 - RenderLimits loaded/generated 값을 올렸을 때 rescue 빈도나 소실 빈도가 줄어드는지 관찰할 수 있다.
 
 ## 7. 실패 판정
 
 - 창이 2개 이상 생김: owner gate, ZDO claim flag, invalid-ZNetView fallback 시간을 확인한다. 기존 창을 item-data 동등성만으로 삭제해서는 안 된다.
 - rescue 로그는 있는데 item이 없음: `SpawnOnHit` 경로와 `ItemDrop.DropItem` fallback을 확인한다.
-- 화살, 적 투사체, 비창 투사체가 추적됨: spear detection 조건을 확인한다.
+- 화살, 적 투사체, 지원 대상이 아닌 비창 투사체가 추적됨: recoverable 조건과 SecondaryAttacks 복사 투척 표식을 확인한다.
 - 월드 종료 중 item이 생성됨: shutdown/world unload guard를 확인한다.
 - SkadiNet 사용 시 owner invalid로 rescue가 skip됨: 마지막으로 이 클라이언트의 소유권이 확인됐는지, 그 확인이 고정된 2초 이내인지 확인한다. Rescue는 TTL 만료 전 1초와 물리 프레임 안전 여유를 기준으로 작동하며 별도 설정은 없다.
 - 표시가 오래된 위치에 남음: 정확한 드롭 식별자, 픽업 응답 억제, 서버 캐시와 로컬 위치 우선 적용을 확인한다.

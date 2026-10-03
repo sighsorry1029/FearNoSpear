@@ -19,7 +19,7 @@ namespace FearNoSpear
         public const string ModName = "FearNoSpear";
         public const string PluginGuid = $"{Author}.{ModName}";
         public const string PluginName = "FearNoSpear";
-        public const string ModVersion = "1.0.9";
+        public const string ModVersion = "1.1.0";
         public const string PluginVersion = ModVersion;
 
         internal static ManualLogSource Log = null!;
@@ -166,20 +166,31 @@ namespace FearNoSpear
     {
         internal const float MinimumInitialTtlSeconds = 60f;
         internal const int MaxLocationResults = 5;
+        internal const int MaxTombstoneResults = 5;
+        internal const int MaxIndicatorResults = MaxLocationResults + MaxTombstoneResults;
 
         internal readonly ConfigEntry<bool> CleanDeathPins;
         internal readonly ConfigEntry<bool> OwnerOnlyTombstones;
         internal readonly ConfigEntry<FearNoSpearPlugin.IndicatorStyle> SpearIndicatorStyle;
+        internal readonly ConfigEntry<FearNoSpearPlugin.IndicatorStyle> TombstoneIndicatorStyle;
         internal readonly ConfigEntry<int> MaxDisplayedSpears;
+        internal readonly ConfigEntry<int> MaxDisplayedTombstones;
 
         internal FearNoSpearConfig(FearNoSpearPlugin plugin)
         {
             SpearIndicatorStyle = plugin.BindConfig("General", "SpearIndicatorStyle", FearNoSpearPlugin.IndicatorStyle.BeamAndHud,
-                "BeamAndHud (default): a 500-meter column plus an item icon and distance on the HUD. Beam: column only, subject to world rendering distance and terrain. Hud: icon and distance only, with a screen-edge direction marker for off-screen spears; it remains visible beyond world rendering distance and through terrain. Off: hides indicators and stops this client's automatic location queries without disabling spear protection or other clients' queries. No real lights or forced zone loading are used. This is a personal setting.", synchronizedSetting: false);
+                "Display your thrown spears and supported SecondaryAttacks copied throws, including ImpactBurst. BeamAndHud (default): a 500-meter column plus an item icon and distance. Beam: column only, subject to render distance and terrain. Hud: icon, distance, and screen-edge directions, visible through terrain and beyond world rendering distance. Off: stops weapon indicators and weapon queries, not protection or tombstone indicators. No real lights or forced zone loading are used. This is a personal setting.", synchronizedSetting: false);
 
             MaxDisplayedSpears = plugin.BindConfig("General", "MaxDisplayedSpears", 1,
-                "Maximum number of your landed or rescued thrown spears to display, nearest first. Range: 1 to 5; default: 1. Uses one shared location request regardless of this count. Nearby drops are followed as they move; distant server positions refresh every 5 seconds. Use SpearIndicatorStyle = Off to disable the display. This is a personal setting.", synchronizedSetting: false,
+                "Maximum number of your landed or rescued thrown weapons to display, nearest first. Includes supported SecondaryAttacks copied throws. Range: 1 to 5; default: 1. Nearby drops are followed as they move; distant server positions refresh every 5 seconds. Weapons and tombstones share one request. Use SpearIndicatorStyle = Off to disable weapon indicators. This is a personal setting.", synchronizedSetting: false,
                 acceptableValues: new AcceptableValueRange<int>(1, MaxLocationResults));
+
+            TombstoneIndicatorStyle = plugin.BindConfig("General", "TombstoneIndicatorStyle", FearNoSpearPlugin.IndicatorStyle.BeamAndHud,
+                "Shows your newest remaining tombstones in this world, up to MaxDisplayedTombstones. BeamAndHud (default), Beam, Hud, or Off. HUD markers use the death icon, distance on the right, and elapsed in-game days/hours below the icon, such as 2d 12h. Age uses the world's clock and day length, not real calendar time; sleeping advances it. Nearby positions follow the tombstone; distant positions refresh from the server every 5 seconds. Fully recovered tombstones disappear from the display. Independent of CleanDeathPins and map pins. This is a personal setting.", synchronizedSetting: false);
+
+            MaxDisplayedTombstones = plugin.BindConfig("General", "MaxDisplayedTombstones", 1,
+                "Maximum number of your remaining tombstones to display, newest first rather than nearest first. Range: 1 to 5; default: 1. Independent of MaxDisplayedSpears. Changing this count does not add server requests. Use TombstoneIndicatorStyle = Off to hide tombstone indicators. This is a personal setting.", synchronizedSetting: false,
+                acceptableValues: new AcceptableValueRange<int>(1, MaxTombstoneResults));
 
             CleanDeathPins = plugin.BindConfig("General", "CleanDeathPins", true,
                 "Removes your vanilla death map pin when your tombstone is recovered, and removes the pin after a short grace period when a death creates no tombstone. Affects your own map only. This personal preference is not synchronized or locked by the server.", synchronizedSetting: false);
@@ -330,6 +341,10 @@ namespace FearNoSpear
 
             if (IsSpearItem(spawnItem) || IsSpearItem(weapon)) return true;
 
+            ZNetView? nview = ReflectionCache.GetNView(projectile);
+            if (nview != null && nview.IsValid() &&
+                nview.GetZDO().GetBool("SecondaryAttacks_CopiedThrowProjectile", false)) return true;
+
             string projectileName = projectile.name ?? string.Empty;
             return ContainsSpearToken(projectileName);
         }
@@ -366,6 +381,7 @@ namespace FearNoSpear
     [HarmonyPatch(typeof(Projectile), "Setup")]
     internal static class ProjectileSetupPatch
     {
+        [HarmonyAfter("sighsorry.SecondaryAttacks")]
         private static void Postfix(Projectile __instance)
         {
             SpearSafetyTracker.GetOrArmIfTracked(__instance);
@@ -397,7 +413,7 @@ namespace FearNoSpear
 
             ItemDrop drop = go.GetComponent<ItemDrop>();
             if (drop == null || drop.m_itemData == null) return;
-            if (!SpearProjectileDetector.IsSpearItem(drop.m_itemData)) return;
+            if (SpearThrowerMetadata.ReadFromDrop(drop) == 0L) return;
 
             __state = SpearItemIdentity.BuildDropRecordKey(drop);
         }
@@ -405,7 +421,7 @@ namespace FearNoSpear
         private static void Postfix(bool __result, string? __state)
         {
             if (!__result || __state == null || __state.Length == 0) return;
-            SpearLocator.MarkSpearPickedUp(__state);
+            SpearLocator.ForgetRecoveredTarget(__state);
         }
     }
 

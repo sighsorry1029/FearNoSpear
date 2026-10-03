@@ -4,17 +4,25 @@ using UnityEngine;
 
 namespace FearNoSpear;
 
+internal enum LocationKind
+{
+    Weapon,
+    Tombstone
+}
+
 internal sealed class SpearLocationRecord
 {
     internal string Key = string.Empty;
     internal Vector3 Position;
     internal int PrefabHash;
     internal int Variant;
+    internal LocationKind Kind;
+    internal long CreatedTicks;
 }
 
 internal static class SpearNetwork
 {
-    private const int ProtocolVersion = 6;
+    private const int ProtocolVersion = 7;
     private const string RequestRpcName = FearNoSpearPlugin.ModName + "_SpearLocationRequest";
     private const string ResponseRpcName = FearNoSpearPlugin.ModName + "_SpearLocationResponse";
 
@@ -37,7 +45,7 @@ internal static class SpearNetwork
         _registeredRpc = rpc;
     }
 
-    internal static bool RequestServerSpearLocation(Player localPlayer, int requestId)
+    internal static bool RequestServerSpearLocation(Player localPlayer, int requestId, bool weapons, bool tombstones)
     {
         if (localPlayer == null) return false;
         if (!TryGetServerPeerId(out long serverPeerId)) return false;
@@ -46,6 +54,8 @@ internal static class SpearNetwork
         WriteHeader(package);
         package.Write(requestId);
         package.Write(localPlayer.transform.position);
+        package.Write(weapons);
+        package.Write(tombstones);
         ZRoutedRpc.instance.InvokeRoutedRPC(serverPeerId, RequestRpcName, package);
         return true;
     }
@@ -74,6 +84,8 @@ internal static class SpearNetwork
 
         Vector3 requestPosition;
         int requestId;
+        bool weapons;
+        bool tombstones;
         try
         {
             if (!TryReadHeader(package, RequestRpcName))
@@ -83,6 +95,8 @@ internal static class SpearNetwork
 
             requestId = package.ReadInt();
             requestPosition = package.ReadVector3();
+            weapons = package.ReadBool();
+            tombstones = package.ReadBool();
             if (!IsFinite(requestPosition)) return;
         }
         catch (Exception ex)
@@ -97,7 +111,7 @@ internal static class SpearNetwork
             return;
         }
 
-        List<SpearLocationRecord> records = SpearServerRegistry.SelectBest(playerId, requestPosition);
+        List<SpearLocationRecord> records = SpearServerRegistry.SelectBest(playerId, requestPosition, weapons, tombstones);
         SendSpearLocationResponse(senderPeerId, requestId, records);
     }
 
@@ -118,7 +132,7 @@ internal static class SpearNetwork
 
             int requestId = package.ReadInt();
             int count = package.ReadInt();
-            if (count < 0 || count > FearNoSpearConfig.MaxLocationResults)
+            if (count < 0 || count > FearNoSpearConfig.MaxIndicatorResults)
             {
                 FearNoSpearPlugin.Log.LogWarning($"Ignored spear location response with invalid record count {count}.");
                 return;
@@ -128,9 +142,10 @@ internal static class SpearNetwork
             for (int i = 0; i < count; ++i)
             {
                 SpearLocationRecord record = ReadRecord(package);
-                if (string.IsNullOrEmpty(record.Key) || !IsFinite(record.Position)) return;
                 records.Add(record);
             }
+
+            if (!AreValidRecords(records)) return;
 
             SpearLocator.ReceiveServerRecords(requestId, records);
         }
@@ -144,7 +159,7 @@ internal static class SpearNetwork
     {
         if (ZRoutedRpc.instance == null) return;
 
-        int count = Mathf.Min(records.Count, FearNoSpearConfig.MaxLocationResults);
+        int count = Mathf.Min(records.Count, FearNoSpearConfig.MaxIndicatorResults);
         ZPackage package = new();
         WriteHeader(package);
         package.Write(requestId);
@@ -232,6 +247,8 @@ internal static class SpearNetwork
         package.Write(record.Position);
         package.Write(record.PrefabHash);
         package.Write(record.Variant);
+        package.Write((int)record.Kind);
+        package.Write(record.CreatedTicks);
     }
 
     private static SpearLocationRecord ReadRecord(ZPackage package)
@@ -241,7 +258,31 @@ internal static class SpearNetwork
             Key = package.ReadString(),
             Position = package.ReadVector3(),
             PrefabHash = package.ReadInt(),
-            Variant = package.ReadInt()
+            Variant = package.ReadInt(),
+            Kind = (LocationKind)package.ReadInt(),
+            CreatedTicks = package.ReadLong()
         };
+    }
+
+    private static bool AreValidRecords(List<SpearLocationRecord> records)
+    {
+        int weapons = 0, tombstones = 0;
+        HashSet<string> keys = new(StringComparer.Ordinal);
+        foreach (SpearLocationRecord record in records)
+        {
+            if (string.IsNullOrEmpty(record.Key) || !keys.Add(record.Key) || !IsFinite(record.Position)) return false;
+            if (record.Kind == LocationKind.Weapon)
+            {
+                if (!record.Key.StartsWith("drop:", StringComparison.Ordinal) || record.CreatedTicks != 0L ||
+                    ++weapons > FearNoSpearConfig.MaxLocationResults) return false;
+            }
+            else if (record.Kind == LocationKind.Tombstone)
+            {
+                if (!record.Key.StartsWith("tomb:", StringComparison.Ordinal) || record.CreatedTicks <= 0L ||
+                    record.CreatedTicks > DateTime.MaxValue.Ticks || ++tombstones > FearNoSpearConfig.MaxTombstoneResults) return false;
+            }
+            else return false;
+        }
+        return true;
     }
 }

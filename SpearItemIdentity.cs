@@ -16,6 +16,11 @@ internal static class SpearItemIdentity
         return BuildDropRecordKey(zdoId.ToString());
     }
 
+    internal static string BuildTombstoneRecordKey(ZDOID zdoId)
+    {
+        return $"tomb:{zdoId}";
+    }
+
     internal static string? TryGetZdoKey(ZNetView? nview)
     {
         if (nview == null || !nview.IsValid()) return null;

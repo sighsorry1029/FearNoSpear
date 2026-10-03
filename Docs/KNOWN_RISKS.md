@@ -17,7 +17,25 @@ These must be tested on a dedicated server.
 
 ## False positives
 
-The mod should avoid rescuing arrows, bolts, enemy projectiles, harpoons, or modded recoverable projectiles unless intentionally configured. Detection currently requires recoverable item behavior plus spear-like item metadata/name.
+Detection requires recoverable item behavior plus spear-like item metadata/name or SecondaryAttacks' copied-throw marker. The marker covers copied throws, not only ImpactBurst. Suppressed SpearRain followups and boomerangs already returned to inventory must never become rescue candidates. Ordinary arrows, bolts, inventory drops, and unrelated projectiles remain outside this integration.
+
+## Indicators and world time
+
+Weapon drops use thrower tags and exact ZDO identities regardless of weapon skill type. Tombstones use their native owner ID and creation time. The client merges live transforms with periodically refreshed server records; remote recovery or destruction can remain visible until the next response. Unloading a tombstone is not recovery and must not permanently suppress it.
+
+Tombstone age uses the current world day length and world clock. Sleeping, time commands, or a changed day length affect the displayed age; it is not real elapsed time. No UTC timestamps or extra death history are persisted. Missing native creation times are skipped rather than invented.
+
+Protocol 7 adds target types, tombstone timestamps, and independent query flags. It explicitly rejects earlier payloads even if a development build shares the same mod version. Install the same development DLL on server and clients. Automated geometry tests do not establish rendering performance or multiplayer behavior.
+
+## Indicator performance
+
+Render objects are pooled up to five weapons plus five tombstones. Each beam uses two line positions, a shared material, and no lights, shadows, physics, or forced zone loading. Weapon/tombstone colors change only when a pooled beam changes target kind. This bounds visual object count, not all lookup work or GPU cost.
+
+Server candidate scans are shared across clients with a five-second cache per requested category. Candidates are grouped by player ID, so requests inspect only the requester's bucket and revalidate live ownership, existence, position, and prefab. Each client normally requests locations every five seconds. A newly created distant target may take about ten seconds to be discovered when cache refresh and request timing do not align; network timeouts can add delay. No new remote requests or scans are added for count changes.
+
+In the original Valheim 1.0.16 code, `GetAllZDOIDsWithHash(Type.Long, ...)` still traverses all stored long fields; it is not a direct hash-to-object index. The patch reduces scan frequency and repeated cross-player filtering, but does not eliminate full-scan spikes. Large worlds and many players still need server main-thread profiling.
+
+The client scans loaded drops every half second and invalidates its selected-target cache. Server responses, expiry, recovery, and session resets also invalidate selection; count/style changes are checked on the next visible frame. Only up to ten selected live targets update their transforms every frame, retaining smooth bounce/float tracking. Prefab/icon lookups and full candidate selection no longer run every frame. A newly nearer weapon can take up to half a second to replace the selected one. Distance/age strings and transparent beam overdraw still require in-game profiling; offline checks cannot establish FPS or allocation budgets.
 
 ## Rescue spawn contract
 
