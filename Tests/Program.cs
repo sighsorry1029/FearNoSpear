@@ -7,6 +7,8 @@ using System.Runtime.CompilerServices;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using UnityEngine;
+using CodeInstruction = HarmonyLib.CodeInstruction;
+using EmitOpCodes = System.Reflection.Emit.OpCodes;
 
 internal static class Program
 {
@@ -38,6 +40,7 @@ internal static class Program
                     CheckIL(game, mod);
             }
             Assembly builtMod = Assembly.LoadFrom(Path.GetFullPath(args[1]));
+            CheckAutoPickupComposition(builtMod);
             CheckProtocol(builtMod);
             CheckSpearClassification(builtMod);
             CheckNearestSelection(builtMod);
@@ -66,8 +69,10 @@ internal static class Program
         Expect(pickup.Body.Instructions.Count(i => i.OpCode == OpCodes.Ldfld && i.Operand is FieldReference f && f.FullName == "System.Boolean ItemDrop::m_autoPickup") == 1,
             "exactly one original auto-pickup gate");
         Expect(Calls(spawn).Count(m => m.FullName == drop.FullName) == 1, "exactly one native spear drop call");
-        Expect(gate.ReturnType.FullName == "System.Boolean" && gate.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(new[] { "ItemDrop", "Player" }),
-            "replacement auto-pickup stack signature");
+        Expect(gate.ReturnType.FullName == "System.Boolean" && gate.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(new[] { "ItemDrop", "System.Boolean", "Player" }),
+            "composable auto-pickup stack signature retains the incoming permission");
+        Expect(!gate.Body.Instructions.Any(i => i.Operand is FieldReference f && f.Name == "m_autoPickup"),
+            "auto-pickup filter does not replace a preceding restriction by rereading the native flag");
         Expect(wrapper.ReturnType.FullName == drop.ReturnType.FullName &&
             wrapper.Parameters.Select(p => p.ParameterType.FullName).SequenceEqual(drop.Parameters.Select(p => p.ParameterType.FullName).Concat(new[] { "Projectile" })),
             "replacement spawn stack signature");
@@ -247,6 +252,95 @@ internal static class Program
         }
         Expect(inaccessible.Count == 0, "no direct non-public game member access: " + string.Join(", ", inaccessible.Distinct()));
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CheckAutoPickupComposition(Assembly mod)
+    {
+        Type patch = mod.GetType("FearNoSpear.SpearAutoPickupPatch", true);
+        MethodInfo transpiler = patch.GetMethod("Transpiler", Fields);
+        MethodInfo gate = patch.GetMethod("CanAutoPickup", Fields);
+        MethodInfo otherGate = typeof(Program).GetMethod(nameof(OtherAutoPickupFilter), Fields);
+        FieldInfo field = typeof(ItemDrop).GetField("m_autoPickup");
+        List<CodeInstruction> Original() => new List<CodeInstruction>
+        {
+            new CodeInstruction(EmitOpCodes.Ldarg_1),
+            new CodeInstruction(EmitOpCodes.Ldfld, field),
+            new CodeInstruction(EmitOpCodes.Ret)
+        };
+        List<CodeInstruction> Apply(IEnumerable<CodeInstruction> code)
+            => ((IEnumerable<CodeInstruction>)transpiler.Invoke(null, new object[] { code })).ToList();
+        bool IsField(CodeInstruction i) => i.opcode == EmitOpCodes.Ldfld && Equals(i.operand, field);
+
+        // The matcher/insertion shape from QuickStackStore 1.4.15; no external mod DLL is required.
+        List<CodeInstruction> Other(IEnumerable<CodeInstruction> code)
+            => new HarmonyLib.CodeMatcher(code).MatchForward(false, new HarmonyLib.CodeMatch(IsField))
+                .InsertAndAdvance(new CodeInstruction(EmitOpCodes.Dup)).Advance(1)
+                .InsertAndAdvance(new CodeInstruction(EmitOpCodes.Ldarg_0))
+                .InsertAndAdvance(new CodeInstruction(EmitOpCodes.Call, otherGate)).Instructions();
+
+        List<CodeInstruction> original = Original();
+        CodeInstruction nativeRead = original[1];
+        var generator = new System.Reflection.Emit.DynamicMethod("UnusedLabels", typeof(void), Type.EmptyTypes).GetILGenerator();
+        var label = generator.DefineLabel();
+        var block = new HarmonyLib.ExceptionBlock(HarmonyLib.ExceptionBlockType.BeginExceptionBlock);
+        nativeRead.labels.Add(label);
+        nativeRead.blocks.Add(block);
+        List<CodeInstruction> alone = Apply(original);
+        Expect(alone.Count(IsField) == 1 && alone.Contains(nativeRead), "native auto-pickup read survives transpilation unchanged");
+        Expect(alone[1].opcode == EmitOpCodes.Dup && alone[1].labels.Contains(label) && alone[1].blocks.Contains(block) &&
+            nativeRead.labels.Count == 0 && nativeRead.blocks.Count == 0,
+            "branches and exception-block entry reach the inserted duplicate before the native read");
+        Expect(!(bool)gate.Invoke(null, new object[] { null, false, null }),
+            "a preceding denial short-circuits before inspecting the drop or player");
+
+        foreach (bool fearFirst in new[] { true, false })
+        {
+            List<CodeInstruction> combined = fearFirst ? Other(Apply(Original())) : Apply(Other(Original()));
+            Expect(combined.Count(IsField) == 1 && combined.Last().opcode == EmitOpCodes.Ret &&
+                combined.Count(i => Equals(i.operand, gate)) == 1 && combined.Count(i => Equals(i.operand, otherGate)) == 1,
+                "both filters stay in the original gate, not after ret; FearNoSpear first=" + fearFirst);
+            foreach (bool native in new[] { false, true })
+            foreach (bool thrower in new[] { false, true })
+            foreach (bool trash in new[] { false, true })
+            {
+                // Interpret only this gate's stack. Permissions are independent inputs, not Unity fixtures.
+                object dropToken = new object(), playerToken = new object();
+                Stack<object> stack = new Stack<object>();
+                foreach (CodeInstruction instruction in combined)
+                {
+                    if (instruction.opcode == EmitOpCodes.Ldarg_1) stack.Push(dropToken);
+                    else if (instruction.opcode == EmitOpCodes.Ldarg_0) stack.Push(playerToken);
+                    else if (instruction.opcode == EmitOpCodes.Dup) stack.Push(stack.Peek());
+                    else if (IsField(instruction))
+                    {
+                        if (stack.Pop() != dropToken) throw new InvalidOperationException("Wrong field receiver");
+                        stack.Push(native);
+                    }
+                    else if (instruction.opcode == EmitOpCodes.Call)
+                    {
+                        if (stack.Pop() != playerToken) throw new InvalidOperationException("Wrong player argument");
+                        bool allowed = (bool)stack.Pop();
+                        if (stack.Pop() != dropToken) throw new InvalidOperationException("Wrong drop argument");
+                        if (Equals(instruction.operand, gate)) stack.Push(allowed && thrower);
+                        else if (Equals(instruction.operand, otherGate)) stack.Push(allowed && trash);
+                        else throw new InvalidOperationException("Unexpected filter");
+                    }
+                    else if (instruction.opcode != EmitOpCodes.Ret) throw new InvalidOperationException("Unexpected gate instruction");
+                }
+                Expect(stack.Count == 1 && (bool)stack.Pop() == (native && thrower && trash),
+                    $"combined gate preserves all restrictions: order={fearFirst}, native={native}, thrower={thrower}, trash={trash}");
+            }
+        }
+        foreach (int count in new[] { 0, 2 })
+        {
+            bool rejected = false;
+            try { Apply(Enumerable.Range(0, count).Select(_ => new CodeInstruction(EmitOpCodes.Ldfld, field))); }
+            catch (InvalidOperationException ex) { rejected = ex.Message.Contains("expected one ItemDrop.m_autoPickup"); }
+            Expect(rejected, "missing or ambiguous native gate is rejected: count=" + count);
+        }
+    }
+
+    private static bool OtherAutoPickupFilter(ItemDrop drop, bool allowed, Player player) => allowed;
 
     private static void CheckRescueSpawnContracts(ModuleDefinition game, ModuleDefinition mod)
     {

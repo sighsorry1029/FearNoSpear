@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
@@ -139,9 +140,10 @@ internal static class SpearAutoPickupPatch
     private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
     {
         List<CodeInstruction> code = instructions.ToList();
-        var autoPickupField = AccessTools.Field(typeof(ItemDrop), nameof(ItemDrop.m_autoPickup));
+        var autoPickupField = typeof(ItemDrop).GetField(nameof(ItemDrop.m_autoPickup));
         if (code.Count(instruction => instruction.LoadsField(autoPickupField)) != 1)
             throw new InvalidOperationException("FearNoSpear: expected one ItemDrop.m_autoPickup check in Player.AutoPickup.");
+        var filterMethod = typeof(SpearAutoPickupPatch).GetMethod(nameof(CanAutoPickup), BindingFlags.Static | BindingFlags.NonPublic);
 
         foreach (CodeInstruction instruction in code)
         {
@@ -151,15 +153,17 @@ internal static class SpearAutoPickupPatch
                 continue;
             }
 
-            // Gate before ownership requests or magnet movement; manual pickup never uses this path.
-            yield return new CodeInstruction(OpCodes.Ldarg_0).MoveLabelsFrom(instruction).MoveBlocksFrom(instruction);
-            yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(SpearAutoPickupPatch), nameof(CanAutoPickup)));
+            // Keep the native field read so other auto-pickup filters can compose in either order.
+            yield return new CodeInstruction(OpCodes.Dup).MoveLabelsFrom(instruction).MoveBlocksFrom(instruction);
+            yield return instruction;
+            yield return new CodeInstruction(OpCodes.Ldarg_0);
+            yield return new CodeInstruction(OpCodes.Call, filterMethod);
         }
     }
 
-    internal static bool CanAutoPickup(ItemDrop drop, Player player)
+    internal static bool CanAutoPickup(ItemDrop drop, bool allowed, Player player)
     {
-        if (!drop.m_autoPickup) return false;
+        if (!allowed) return false;
         long throwerId = SpearThrowerMetadata.ReadFromDrop(drop);
         return throwerId == 0L || throwerId == player.GetPlayerID();
     }

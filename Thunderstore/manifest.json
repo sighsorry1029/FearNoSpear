@@ -1,6 +1,6 @@
 {
   "name": "FearNoSpear",
-  "version_number": "1.1.0",
+  "version_number": "1.1.1",
   "website_url": "https://discord.gg/jkcJCq2sK5",
   "description": "Find thrown spears with light beams and HUD markers. Helps prevent spear loss and accidental auto-pickup by others. Cleans death pins and protects tombstones, with access for owners, admins in debug mode, and Clan members, including Guests.",
   "dependencies": [
