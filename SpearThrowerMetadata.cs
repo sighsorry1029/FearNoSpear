@@ -12,6 +12,9 @@ internal static class SpearThrowerMetadata
 {
     internal const string ThrowerPlayerIdKey = "FearNoSpear.ThrowerPlayerID";
     internal static readonly int ThrowerPlayerIdHash = ThrowerPlayerIdKey.GetStableHashCode();
+    // These producer-owned tags affect auto-pickup only, not locator or rescue eligibility.
+    internal const string CaptainThrowerPlayerIdKey = "CaptainValheim.ThrowerPlayerID";
+    internal const string SecondaryThrowerPlayerIdKey = "SecondaryAttacks.ThrowerPlayerID";
 
     internal static bool TryWriteToProjectile(Projectile projectile, out long playerId)
     {
@@ -47,6 +50,29 @@ internal static class SpearThrowerMetadata
         return ReadFromView(nview);
     }
 
+    internal static long ReadAutoPickupThrowerFromDrop(ItemDrop drop)
+    {
+        if (drop == null) return 0L;
+        ZNetView? nview = drop.GetComponent<ZNetView>();
+        return nview != null && nview.IsValid() ? ReadAutoPickupThrower(nview.GetZDO()) : 0L;
+    }
+
+    internal static long ReadAutoPickupThrower(ZDO? zdo)
+    {
+        if (zdo == null || !zdo.IsValid()) return 0L;
+        long playerId = zdo.GetLong(CaptainThrowerPlayerIdKey, 0L);
+        if (playerId == 0L) playerId = zdo.GetLong(SecondaryThrowerPlayerIdKey, 0L);
+        return playerId != 0L ? playerId : ReadFromZdo(zdo);
+    }
+
+    internal static void CopySecondaryThrowerToDrop(Projectile projectile, ItemDrop drop)
+    {
+        ZNetView? source = ReflectionCache.GetNView(projectile);
+        if (source == null || !source.IsValid()) return;
+        long playerId = source.GetZDO().GetLong(SecondaryThrowerPlayerIdKey, 0L);
+        if (playerId != 0L) TryWriteToView(drop.GetComponent<ZNetView>(), playerId, SecondaryThrowerPlayerIdKey);
+    }
+
     internal static long ReadFromZdo(ZDO? zdo)
     {
         return zdo != null && zdo.IsValid()
@@ -75,7 +101,7 @@ internal static class SpearThrowerMetadata
         return ReadFromZdo(zdo);
     }
 
-    private static bool TryWriteToView(ZNetView? nview, long playerId)
+    private static bool TryWriteToView(ZNetView? nview, long playerId, string key = ThrowerPlayerIdKey)
     {
         if (nview == null || !nview.IsValid() || playerId == 0L) return false;
         if (!CanWrite(nview)) return false;
@@ -83,10 +109,10 @@ internal static class SpearThrowerMetadata
         ZDO zdo = nview.GetZDO();
         if (zdo == null || !zdo.IsValid()) return false;
 
-        long current = zdo.GetLong(ThrowerPlayerIdKey, 0L);
+        long current = zdo.GetLong(key, 0L);
         if (current == playerId) return true;
 
-        zdo.Set(ThrowerPlayerIdKey, playerId);
+        zdo.Set(key, playerId);
         return true;
     }
 
@@ -130,6 +156,11 @@ internal static class ProjectileSpawnItemPatch
             try { tracker.RecordSpawnedDrop(drop); }
             catch (Exception ex) { FearNoSpearPlugin.Log.LogWarning($"Could not tag thrown spear: {ex.Message}"); }
         }
+        if (drop != null)
+        {
+            try { SpearThrowerMetadata.CopySecondaryThrowerToDrop(projectile, drop); }
+            catch (Exception ex) { FearNoSpearPlugin.Log.LogWarning($"Could not tag SecondaryAttacks drop: {ex.Message}"); }
+        }
         return drop!;
     }
 }
@@ -164,7 +195,7 @@ internal static class SpearAutoPickupPatch
     internal static bool CanAutoPickup(ItemDrop drop, bool allowed, Player player)
     {
         if (!allowed) return false;
-        long throwerId = SpearThrowerMetadata.ReadFromDrop(drop);
+        long throwerId = SpearThrowerMetadata.ReadAutoPickupThrowerFromDrop(drop);
         return throwerId == 0L || throwerId == player.GetPlayerID();
     }
 }

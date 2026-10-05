@@ -39,6 +39,8 @@ Only drops tagged with your thrower ID are tracked. Markers disappear when you p
 
 Only the thrower can automatically attract and pick up a tagged weapon. Other players can still pick it up manually.
 
+CaptainValheim shield drops and SecondaryAttacks recoverable copied throws can also provide their thrower ID for this rule. Use the updated throwing mod and FearNoSpear on participating clients. The integration adds no required mod dependency or extra settings. Shield returns stay under CaptainValheim's control; this does not add shield indicators or shield rescue.
+
 Weapons dropped from inventory and items without a thrower tag keep normal pickup behavior. This rule is always active, including when indicators are off.
 
 ## Tombstones

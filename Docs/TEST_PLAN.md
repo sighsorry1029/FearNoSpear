@@ -99,6 +99,33 @@ For each rescue case:
 
 ## Regression checks
 
+### Optional thrown-weapon integration
+
+The data contract uses ZDO `long` values containing the throwing character's `Player.GetPlayerID()`, never the crafter ID or network peer/owner ID:
+
+- `CaptainValheim.ThrowerPlayerID`: captured when the equipped shield is consumed, carried through chain/return controllers, and written to the actual dropped shield by CaptainValheim.
+- `SecondaryAttacks.ThrowerPlayerID`: written on recoverable copied-throw projectiles independently of visual swapping. FearNoSpear's existing `Projectile.SpawnOnHit` drop wrapper copies it to the exact returned drop, even without a spear tracker.
+- FearNoSpear reads these keys only for auto-pickup. They do not expand HUD candidates or rescue eligibility. Its existing tracking tag remains separate. A direct CaptainValheim drop tag takes precedence over the SecondaryAttacks projectile tag, then the generic FearNoSpear tracking tag.
+- Tags live on world ZDOs, not `ItemData.m_customData`. Manual pickup followed by an ordinary inventory drop does not carry the restriction. No migration or attribution guesses are applied to old untagged drops.
+- Neither producer installs an auto-pickup patch or requires FearNoSpear to load. FearNoSpear remains the only enforcement point; a client without it can still auto-pick up these items. This is not server-enforced anti-theft.
+
+Run the cross-DLL checks after building all three projects in Debug:
+
+```powershell
+dotnet build Tests/FearNoSpear.Checks.csproj -c Debug
+dotnet Tests/bin/Debug/net8.0/FearNoSpear.Checks.dll 'C:/Program Files (x86)/Steam/steamapps/common/Valheim' bin/Debug/FearNoSpear.dll ../CaptainValheim/bin/Debug/CaptainValheim.dll ../SecondaryAttacks/bin/Debug/SecondaryAttacks.dll
+```
+
+These checks execute the metadata readers with the original game's managed ZDO data, verify the producer/consumer key and ownership contracts in the merged DLLs, and retain the two-order QuickStackStore gate composition checks. They do not run Unity, install Harmony detours, or simulate actual world drops or network delivery.
+
+Remaining in-game cases, with two players on a host and then a dedicated server:
+
+1. Throw identical-spec weapons as each player. Only the actual thrower attracts each item; crafting or carrying it earlier gives no pickup privilege. Repeat while indicators are Off and with QuickStackStore installed.
+2. For shields, cover ordinary landing, chained flight, blocked return, full inventory, projectile creation failure and destruction with the original player object unavailable. Verify one item and the original thrower tag on every resulting drop. Successful direct returns must not spawn a drop.
+3. For SecondaryAttacks, cover ImpactBurst, a copied throw retaining its native visual, ordinary impact, boomerang catch and failed/full-inventory catch. Inspect the projectile and resulting drop tag. SpearRain virtual follow-ups must not spawn items or acquire the auto-pickup tag.
+4. Manually pick up another player's thrown item, then drop it from inventory. Verify ordinary behavior and no retained thrower custom data. Retry after a landed item moves, its network owner changes, and the world is saved/reloaded.
+5. Test each producer without FearNoSpear and FearNoSpear without either producer. No missing-dependency errors, extra auto-pickup patches, new shield HUD markers, or new shield TTL/rescue behavior should appear.
+
 Verify these are not affected:
 
 - arrows,

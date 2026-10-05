@@ -17,9 +17,9 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        if (args.Length != 2)
+        if (args.Length != 2 && args.Length != 4)
         {
-            System.Console.Error.WriteLine("Usage: FearNoSpear.Checks <Valheim directory> <built FearNoSpear.dll>");
+            System.Console.Error.WriteLine("Usage: FearNoSpear.Checks <Valheim directory> <built FearNoSpear.dll> [<CaptainValheim.dll> <SecondaryAttacks.dll>]");
             return 2;
         }
         string[] roots = { Path.Combine(args[0], "valheim_Data", "Managed"), Path.Combine(args[0], "BepInEx", "core"), Path.GetDirectoryName(Path.GetFullPath(args[1])) };
@@ -37,10 +37,14 @@ internal static class Program
                 var options = new ReaderParameters { AssemblyResolver = resolver };
                 using (var game = ModuleDefinition.ReadModule(Path.Combine(roots[0], "assembly_valheim.dll"), options))
                 using (var mod = ModuleDefinition.ReadModule(args[1], options))
+                {
                     CheckIL(game, mod);
+                    if (args.Length == 4) ThrowerIntegrationChecks.Run(mod, args[2], args[3], options, Expect);
+                }
             }
             Assembly builtMod = Assembly.LoadFrom(Path.GetFullPath(args[1]));
             CheckAutoPickupComposition(builtMod);
+            CheckAutoPickupMetadata(builtMod);
             CheckProtocol(builtMod);
             CheckSpearClassification(builtMod);
             CheckNearestSelection(builtMod);
@@ -80,8 +84,12 @@ internal static class Program
         Expect(Calls(wrapper).Any(m => m.Name == "RecordSpawnedDrop"), "wrapper records the returned drop");
         Expect(!AllTypes(mod.Types).Where(t => t.Namespace == "FearNoSpear").SelectMany(t => t.Methods).Where(m => m.HasBody)
             .SelectMany(Calls).Any(m => m.Name == "FindBestMatchingNearbyDrop"), "nearby equivalence guessing removed");
-        Expect(Calls(gate).Any(m => m.Name == "ReadFromDrop") && Calls(gate).Any(m => m.Name == "GetPlayerID"),
+        Expect(Calls(gate).Any(m => m.Name == "ReadAutoPickupThrowerFromDrop") && Calls(gate).Any(m => m.Name == "GetPlayerID"),
             "auto-pickup compares thrower metadata with player identity");
+        Expect(Calls(wrapper).Any(m => m.Name == "CopySecondaryThrowerToDrop"),
+            "existing native-drop wrapper forwards SecondaryAttacks metadata without a second drop patch");
+        Expect(Calls(Method(mod, "FearNoSpear.SpearThrowerMetadata", "TryWriteToView")).Any(m => m.Name == "CanWrite"),
+            "all drop metadata writes retain the network authority check");
         Expect(game.GetType("ItemDrop").Fields.Single(f => f.Name == "s_instances").IsPrivate, "loaded-drop registry requires reflection");
         MethodDefinition candidateRefresh = Method(mod, "FearNoSpear.SpearServerRegistry", "RefreshCandidates");
         Expect(Calls(candidateRefresh).Any(m => m.Name == "GetZDO") && Calls(candidateRefresh).Any(m => m.Name == "GetLong"),
@@ -341,6 +349,44 @@ internal static class Program
     }
 
     private static bool OtherAutoPickupFilter(ItemDrop drop, bool allowed, Player player) => allowed;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CheckAutoPickupMetadata(Assembly mod)
+    {
+        Type metadata = mod.GetType("FearNoSpear.SpearThrowerMetadata", true);
+        MethodInfo pickup = metadata.GetMethod("ReadAutoPickupThrower", Fields);
+        MethodInfo locator = metadata.GetMethod("ReadFromZdo", Fields);
+        string nativeKey = (string)metadata.GetField("ThrowerPlayerIdKey", Fields).GetRawConstantValue();
+        string captainKey = (string)metadata.GetField("CaptainThrowerPlayerIdKey", Fields).GetRawConstantValue();
+        string secondaryKey = (string)metadata.GetField("SecondaryThrowerPlayerIdKey", Fields).GetRawConstantValue();
+        var zdo = (ZDO)RuntimeHelpers.GetUninitializedObject(typeof(ZDO));
+        zdo.m_uid = new ZDOID(97531L, 1U);
+        MethodInfo release = typeof(ZDOExtraData).GetMethod("ReleaseLongs", Fields);
+        long Read(MethodInfo reader, ZDO value) => (long)reader.Invoke(null, new object[] { value });
+        try
+        {
+            Expect(Read(pickup, null) == 0L && Read(pickup, zdo) == 0L, "untagged or missing drops remain unrestricted");
+            ZDOExtraData.Set(zdo.m_uid, "crafterID".GetStableHashCode(), 123L);
+            ZDOExtraData.Set(zdo.m_uid, ZDOVars.s_owner, 456L);
+            Expect(Read(pickup, zdo) == 0L, "crafter and generic owner data do not impose thrower restrictions");
+            foreach (string key in new[] { nativeKey, captainKey, secondaryKey })
+            foreach (long id in new[] { 0L, 11L, 22L, -33L })
+            {
+                release.Invoke(null, new object[] { zdo.m_uid });
+                ZDOExtraData.Set(zdo.m_uid, key.GetStableHashCode(), id);
+                Expect(Read(pickup, zdo) == id, "auto-pickup reads the exact character ID: " + key + "=" + id);
+                Expect(Read(locator, zdo) == (key == nativeKey ? id : 0L), "auto-pickup-only tags do not expand HUD candidates: " + key);
+            }
+            ZDOExtraData.Set(zdo.m_uid, nativeKey.GetStableHashCode(), 11L);
+            ZDOExtraData.Set(zdo.m_uid, secondaryKey.GetStableHashCode(), 22L);
+            Expect(Read(pickup, zdo) == 22L, "producer identity takes precedence over the generic tracking tag");
+            ZDOExtraData.Set(zdo.m_uid, captainKey.GetStableHashCode(), 33L);
+            Expect(Read(pickup, zdo) == 33L, "direct shield-drop identity takes precedence over projectile tags");
+            typeof(ZDO).GetField("m_prefab", Fields).SetValue(zdo, -1);
+            Expect(Read(pickup, zdo) == 0L, "invalid world data is not used as a pickup restriction");
+        }
+        finally { release.Invoke(null, new object[] { zdo.m_uid }); }
+    }
 
     private static void CheckRescueSpawnContracts(ModuleDefinition game, ModuleDefinition mod)
     {
